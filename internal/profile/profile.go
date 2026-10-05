@@ -105,6 +105,49 @@ func Open(dir string) (*Store, error) {
 func (s *Store) Load() (Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.load()
+}
+
+// Save replaces the saved Profile atomically.
+func (s *Store) Save(p Profile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.save(p)
+}
+
+// Update applies change to the saved Profile and saves the result, with no
+// other Load or Save in between. Nothing is saved if change fails.
+func (s *Store) Update(change func(*Profile) error) (Profile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, err := s.load()
+	if err != nil {
+		return Profile{}, err
+	}
+	if err := change(&p); err != nil {
+		return Profile{}, err
+	}
+	if err := s.save(p); err != nil {
+		return Profile{}, err
+	}
+	return p, nil
+}
+
+// Forget deletes the Profile and ember's key pair. The forgotten Device may
+// still list the public key in its authorized_keys, but the private half is
+// gone, so that entry opens nothing; the next Signer call makes a new pair.
+func (s *Store) Forget() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range []string{profileFile, keyFile} {
+		if err := os.Remove(filepath.Join(s.dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) load() (Profile, error) {
 	raw, err := os.ReadFile(filepath.Join(s.dir, profileFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Profile{}, ErrNotPaired
@@ -119,19 +162,16 @@ func (s *Store) Load() (Profile, error) {
 	return p, nil
 }
 
-// Save replaces the saved Profile atomically.
-func (s *Store) Save(p Profile) error {
+func (s *Store) save(p Profile) error {
 	raw, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return writeAtomic(filepath.Join(s.dir, profileFile), append(raw, '\n'))
 }
 
 // Signer returns ember's SSH key, generating it on first use. The key is
-// created once and never replaced: the Device trusts it.
+// kept until Forget: the paired Device trusts it.
 func (s *Store) Signer() (ssh.Signer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
