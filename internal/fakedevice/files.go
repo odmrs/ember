@@ -1,10 +1,13 @@
 package fakedevice
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/sftp"
 )
@@ -72,7 +75,7 @@ func (f *files) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
 func (f *files) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	p := f.host(r.Filepath)
 	switch r.Method {
-	case "Stat", "Lstat":
+	case "Stat":
 		fi, err := os.Stat(p)
 		if err != nil {
 			return nil, err
@@ -96,6 +99,45 @@ func (f *files) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	return nil, sftp.ErrSSHFxOpUnsupported
 }
 
+// Lstat describes a symbolic link itself rather than its target.
+func (f *files) Lstat(r *sftp.Request) (sftp.ListerAt, error) {
+	fi, err := os.Lstat(f.host(r.Filepath))
+	if err != nil {
+		return nil, err
+	}
+	return lister{fi}, nil
+}
+
+// RealPath resolves symbolic links like OpenSSH's sftp-server does, including
+// accepting a last component that does not exist yet. Links on the fake are
+// written with host paths, so they are resolved on the host and mapped back.
+func (f *files) RealPath(p string) (string, error) {
+	p = path.Clean("/" + p)
+	root, err := filepath.EvalSymlinks(f.root)
+	if err != nil {
+		return "", err
+	}
+	host, err := filepath.EvalSymlinks(f.host(p))
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, lerr := os.Lstat(f.host(p)); lerr == nil {
+			return "", err // a dangling link
+		}
+		parent, perr := filepath.EvalSymlinks(f.host(path.Dir(p)))
+		if perr != nil {
+			return "", perr
+		}
+		host, err = filepath.Join(parent, path.Base(p)), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, host)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", os.ErrPermission
+	}
+	return path.Join("/", filepath.ToSlash(rel)), nil
+}
+
 type lister []os.FileInfo
 
 func (l lister) ListAt(out []os.FileInfo, off int64) (int, error) {
@@ -109,4 +151,8 @@ func (l lister) ListAt(out []os.FileInfo, off int64) (int, error) {
 	return n, nil
 }
 
-var _ sftp.StatVFSFileCmder = (*files)(nil)
+var (
+	_ sftp.StatVFSFileCmder   = (*files)(nil)
+	_ sftp.LstatFileLister    = (*files)(nil)
+	_ sftp.RealPathFileLister = (*files)(nil)
+)

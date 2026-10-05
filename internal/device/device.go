@@ -212,6 +212,19 @@ func (d *Device) Stat(path string) (fs.FileInfo, error) {
 	return d.sftp.Stat(path)
 }
 
+// ReadDir lists a directory. Each entry describes itself: a symbolic link is
+// reported as a link, not as what it points to.
+func (d *Device) ReadDir(path string) ([]fs.FileInfo, error) {
+	return d.sftp.ReadDir(path)
+}
+
+// RealPath has the Device resolve path to its canonical absolute form, with
+// "." and ".." removed and symbolic links followed. The last component does
+// not have to exist.
+func (d *Device) RealPath(path string) (string, error) {
+	return d.sftp.RealPath(path)
+}
+
 // MkdirAll creates path and any missing parents. Directories it creates get
 // mode perm.
 func (d *Device) MkdirAll(path string, perm fs.FileMode) error {
