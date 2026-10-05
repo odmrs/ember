@@ -272,6 +272,30 @@ func TestMoveCarriesSidecarsAndFolders(t *testing.T) {
 	})
 }
 
+// A batch that fails partway says which entries already went.
+func TestMoveStoppedPartwaySaysWhatMoved(t *testing.T) {
+	backends(t, func(t *testing.T, fsys FS, d disk) {
+		library(t, d)
+		s := &spy{FS: fsys, failRename: func(from, _ string) bool { return strings.HasSuffix(from, "/cover.png") }}
+		_, err := New(s, root).Move([]string{"Dune.epub", "cover.png", "Neuromancer.mobi"}, "Empty", Options{})
+		var me *MoveError
+		if !errors.As(err, &me) || !errors.Is(err, errInjected) {
+			t.Fatalf("err = %v", err)
+		}
+		if strings.Join(me.Moved, ",") != "Dune.epub" || me.Failed != "cover.png" {
+			t.Fatalf("moved %v, failed %q", me.Moved, me.Failed)
+		}
+		if got := listed(t, fsys, "Empty"); got != "Dune.epub" {
+			t.Fatalf("destination has %s", got)
+		}
+		s.failRename = func(from, _ string) bool { return strings.HasSuffix(from, "/Neuromancer.mobi") }
+		_, err = New(s, root).Move([]string{"Neuromancer.mobi", "cover.png"}, "Empty", Options{})
+		if errors.As(err, &me) || !errors.Is(err, errInjected) {
+			t.Fatalf("nothing moved, err = %v", err)
+		}
+	})
+}
+
 func TestMoveIntoTheSameFolderIsANoOp(t *testing.T) {
 	backends(t, func(t *testing.T, fsys FS, d disk) {
 		library(t, d)

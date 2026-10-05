@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -277,6 +278,40 @@ func TestLibraryOperationErrors(t *testing.T) {
 		if !onDisk(t, fake, p) {
 			t.Errorf("%s is gone", p)
 		}
+	}
+}
+
+// A move that fails partway answers with what went and the folder as it is
+// now, so the dashboard can show it.
+func TestLibraryMoveStoppedPartway(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a folder whose entries cannot be renamed")
+	}
+	fake, h := opLibrary(t)
+	doc := fakedevice.Documents
+	fake.WriteFile(t, doc+"/Stuck/Locked.epub", "l")
+	locked := fake.Path(doc + "/Stuck")
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	rec := post(t, h, "/api/library/move", `{"paths":["Dune.epub","Stuck/Locked.epub"],"to":"Sci-Fi","view":""}`)
+	var a struct {
+		Error  string
+		Moved  []string
+		Failed string
+		Folder *library.Folder
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &a); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusInternalServerError || a.Error != "move_incomplete" ||
+		strings.Join(a.Moved, ",") != "Dune.epub" || a.Failed != "Stuck/Locked.epub" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if a.Folder == nil || fileNames(a.Folder) != "Sci-Fi,Stuck" {
+		t.Fatalf("folder %s", rec.Body)
 	}
 }
 

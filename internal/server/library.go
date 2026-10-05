@@ -155,6 +155,17 @@ func routeWrite[T interface{ view() string }](mux *http.ServeMux, pattern string
 		mu.Lock()
 		defer mu.Unlock()
 		res, err := apply(lib, req)
+		var moveErr *library.MoveError
+		if errors.As(err, &moveErr) {
+			// Part of the batch went: the dashboard needs the folder as it is
+			// now as much as the error.
+			ans := map[string]any{"error": "move_incomplete", "message": err.Error(), "moved": moveErr.Moved, "failed": moveErr.Failed, "folder": nil}
+			if f, lerr := lib.List(req.view()); lerr == nil {
+				ans["folder"] = f
+			}
+			writeJSONStatus(w, http.StatusInternalServerError, ans)
+			return
+		}
 		if err != nil {
 			writeError(w, err)
 			return
