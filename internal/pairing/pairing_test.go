@@ -227,8 +227,22 @@ func newFlow(t *testing.T, targets ...string) (*Flow, *profile.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := NewFlow(Config{Store: store, Targets: func([]int) ([]string, error) { return targets, nil }})
+	f := NewFlow(Config{Store: store, Targets: func([]int) ([]string, error) { return targets, nil }, Probe: loopbackOnly(t)})
 	return f, store
+}
+
+// loopbackOnly probes like Find, but fails the test instead of dialing
+// anything off this machine.
+func loopbackOnly(t *testing.T) func(context.Context, []string) []Candidate {
+	return func(ctx context.Context, targets []string) []Candidate {
+		for _, a := range targets {
+			if host, _, err := net.SplitHostPort(a); err != nil || host != "127.0.0.1" {
+				t.Errorf("a search was about to probe %s", a)
+				return nil
+			}
+		}
+		return Find(ctx, targets)
+	}
 }
 
 func scan(t *testing.T, f *Flow, address string) State {

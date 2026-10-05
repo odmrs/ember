@@ -55,6 +55,8 @@ type Config struct {
 	// LookupHost resolves a host name typed by the user. Nil means the
 	// system resolver.
 	LookupHost func(ctx context.Context, host string) ([]string, error)
+	// Probe inspects the "host:port" targets of a search. Nil means Find.
+	Probe func(ctx context.Context, targets []string) []Candidate
 }
 
 // Flow runs pairing for the dashboard: search, confirm, lock. It is safe for
@@ -75,6 +77,9 @@ func NewFlow(cfg Config) *Flow {
 	}
 	if cfg.LookupHost == nil {
 		cfg.LookupHost = net.DefaultResolver.LookupHost
+	}
+	if cfg.Probe == nil {
+		cfg.Probe = Find
 	}
 	return &Flow{cfg: cfg, state: State{Phase: PhaseIdle, Candidates: []Candidate{}}}
 }
@@ -150,7 +155,7 @@ func (f *Flow) Scan(address string, port int) error {
 		defer cancel()
 		var found []Candidate
 		if list, err := targets(); err == nil {
-			found = Find(ctx, list)
+			found = f.cfg.Probe(ctx, list)
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -223,8 +228,9 @@ func (f *Flow) localAddrs(hostport string) ([]string, error) {
 	return out, nil
 }
 
+// isLocal also takes IPv4-mapped IPv6 addresses by their IPv4 meaning,
+// as netip's predicates do.
 func isLocal(ip netip.Addr) bool {
-	ip = ip.Unmap()
 	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback()
 }
 
