@@ -189,37 +189,15 @@ only", and pick your Kindle in the dashboard. ember waits until the key works.
 
 ## Contributing
 
-Help is welcome, especially:
+Bug reports and change requests are the most useful help, especially reports
+from Kindle models other than the basic Kindle. Please open an issue describing
+the problem before writing code: pull requests are for issues we have agreed on,
+plus small fixes such as typos, translations and name-cleaner corpus rows.
+[CONTRIBUTING.md](CONTRIBUTING.md) has what to put in a report, with examples,
+and the development setup.
 
-- **Bug reports.** Include what you did, what happened, the terminal output of
-  ember and a screenshot if it is visual, plus your Kindle model, firmware
-  version and KOReader version.
-- **Testing on other Kindles.** Reports from models other than the basic Kindle,
-  working or not, are useful on their own.
-- **Translations.** The dashboard strings live in
-  `internal/web/static/i18n/` (`en.json`, `pt.json`). A test checks that every
-  catalog has the same keys and that every key the code uses exists.
-- **Name cleaner corpus.** If ember cleans a real file name badly, add the name
-  and the result you expect to the table in `internal/names/corpus_test.go`.
-
-Development:
-
-```sh
-go test -race ./...
-go vet ./...
-gofmt -l .
-```
-
-The tests run against an in-process fake Kindle, so you do not need a device.
-
-Some rules the project keeps:
-
-- No new dependencies without an ADR in `docs/adr/`.
-- The dashboard makes no external requests; tests enforce it.
-- Small, focused pull requests, with tests.
-- Code comments explain the code.
-
-Design decisions and their reasons are in [`docs/adr/`](docs/adr/).
+Security problems: report them privately, as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 
