@@ -24,6 +24,9 @@ type rig struct {
 	store *profile.Store
 	dials atomic.Int32
 	scans atomic.Int32
+	// attempts per round; most tests want the loop to keep going, so the
+	// default is effectively endless.
+	attempts int
 }
 
 // newRig returns a Profile paired with fake, saved with address addr. ember's
@@ -48,7 +51,7 @@ func newRig(t *testing.T, fake *fakedevice.Device, addr string, authorized ...*f
 	if err := store.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	return &rig{t: t, store: store}
+	return &rig{t: t, store: store, attempts: 1 << 20}
 }
 
 func splitAddr(t *testing.T, addr string) (string, int) {
@@ -75,7 +78,8 @@ func (r *rig) connector(targets []string, after func(time.Duration) <-chan time.
 			r.scans.Add(1)
 			return targets, nil
 		},
-		After: after,
+		After:    after,
+		Attempts: r.attempts,
 	})
 	r.t.Cleanup(c.Close)
 	return c
@@ -235,6 +239,64 @@ func TestNetworkSweepsAreSpacedOut(t *testing.T) {
 	waitFor(t, states, "17 attempts", func(State) bool { return r.dials.Load() >= 17 })
 	if n := r.scans.Load(); n < 2 || n > 3 {
 		t.Fatalf("%d sweeps over 17 attempts, want one every %d attempts", n, scanEveryAttempts)
+	}
+}
+
+func TestStoppingTheSSHServerEndsTheLink(t *testing.T) {
+	fake := fakedevice.New(t)
+	r := newRig(t, fake, fake.Addr(), fake)
+	c := r.connector(nil, fast)
+
+	states := session(t, c)
+	waitFor(t, states, "linked", func(s State) bool { return s.Phase == PhaseLinked })
+	fake.StopListening()
+	s := waitFor(t, states, "searching after the server stopped", func(s State) bool {
+		return s.Phase == PhaseSearching && s.Failure == FailPortClosed
+	})
+	if s.Address != fake.Addr() {
+		t.Fatalf("state = %+v", s)
+	}
+	if _, err := c.Device(); err != ErrNotLinked {
+		t.Fatalf("still linked: %v", err)
+	}
+	fake.Start()
+	waitFor(t, states, "relinked", func(s State) bool { return s.Phase == PhaseLinked })
+}
+
+func TestARoundEndsAfterFiveAttemptsAndWaitsForRetry(t *testing.T) {
+	fake := fakedevice.New(t)
+	fake.Stop()
+	r := newRig(t, fake, fake.Addr(), fake)
+	r.attempts = AttemptsPerRound
+	c := r.connector(nil, fast)
+
+	states := session(t, c)
+	s := waitFor(t, states, "waiting", func(s State) bool { return s.Phase == PhaseWaiting })
+	if s.Attempt != AttemptsPerRound || s.Failure != FailPortClosed {
+		t.Fatalf("state = %+v", s)
+	}
+	time.Sleep(10 * RetryInterval / 50)
+	if n := r.dials.Load(); n != AttemptsPerRound {
+		t.Fatalf("%d dials while waiting, want %d", n, AttemptsPerRound)
+	}
+
+	fake.Start()
+	c.Retry()
+	waitFor(t, states, "linked after retry", linkedAt(fake.Addr()))
+}
+
+func TestADroppedLinkGetsAFreshRound(t *testing.T) {
+	fake := fakedevice.New(t)
+	r := newRig(t, fake, fake.Addr(), fake)
+	r.attempts = AttemptsPerRound
+	c := r.connector(nil, fast)
+
+	states := session(t, c)
+	waitFor(t, states, "linked", linkedAt(fake.Addr()))
+	fake.Stop()
+	s := waitFor(t, states, "waiting", func(s State) bool { return s.Phase == PhaseWaiting })
+	if s.Attempt != AttemptsPerRound {
+		t.Fatalf("state = %+v", s)
 	}
 }
 

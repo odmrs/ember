@@ -35,6 +35,10 @@ func newHandler(hostport, version string, flow *pairing.Flow, conn *connector.Co
 		status(w, version, flow)
 	})
 	mux.HandleFunc("GET /api/events", events(conn))
+	mux.HandleFunc("POST /api/connect/retry", func(w http.ResponseWriter, r *http.Request) {
+		conn.Retry()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	routePairing(mux, flow)
 	a := newAccess(flow, conn)
 	routeLibrary(mux, a)
