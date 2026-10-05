@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/odmrs/ember/internal/connector"
 	"github.com/odmrs/ember/internal/pairing"
@@ -19,6 +20,11 @@ const csp = "default-src 'self'; connect-src 'self'; img-src 'self' data:; " +
 // loopback address such as "127.0.0.1:8737". It panics otherwise: serving the
 // API on any other interface would hand the Device to the whole network.
 func New(hostport, version string, flow *pairing.Flow, conn *connector.Connector) http.Handler {
+	return newHandler(hostport, version, flow, conn, time.Now)
+}
+
+// newHandler is New with the clock that confirmation tokens expire by.
+func newHandler(hostport, version string, flow *pairing.Flow, conn *connector.Connector, now func() time.Time) http.Handler {
 	host, _, err := net.SplitHostPort(hostport)
 	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
 		panic("server: not a loopback address: " + hostport)
@@ -30,7 +36,9 @@ func New(hostport, version string, flow *pairing.Flow, conn *connector.Connector
 	})
 	mux.HandleFunc("GET /api/events", events(conn))
 	routePairing(mux, flow)
-	routeLibrary(mux, flow, conn)
+	a := &access{flow: flow, conn: conn}
+	routeLibrary(mux, a)
+	routeSettings(mux, a, &confirmGate{now: now})
 	return guard(hostport, mux)
 }
 

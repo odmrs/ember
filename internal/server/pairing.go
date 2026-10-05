@@ -171,6 +171,16 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusBadGateway, "auth_rejected", err.Error())
 	case errors.Is(err, profile.ErrNotPaired):
 		writeErrorCode(w, http.StatusConflict, "not_paired", err.Error())
+	case errors.Is(err, errBadPort):
+		writeErrorCode(w, http.StatusBadRequest, "bad_port", err.Error())
+	case errors.Is(err, errBadUser):
+		writeErrorCode(w, http.StatusBadRequest, "bad_user", err.Error())
+	case errors.Is(err, errNotConfirmed):
+		writeErrorCode(w, http.StatusForbidden, "confirmation_required", err.Error())
+	case errors.Is(err, errForgetUnasked):
+		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, library.ErrRootOutside):
+		writeErrorCode(w, http.StatusBadRequest, "root_outside", err.Error())
 	case errors.Is(err, connector.ErrNotLinked):
 		writeErrorCode(w, http.StatusServiceUnavailable, "not_linked", err.Error())
 	case errors.Is(err, errNoPaths):

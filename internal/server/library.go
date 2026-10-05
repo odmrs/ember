@@ -29,8 +29,7 @@ type opResult struct {
 // routeLibrary serves the Library. Paths are Library paths; the library
 // package decides what they may reach. Reads are GETs, every change is a
 // POST, so the same-origin guard covers all of them.
-func routeLibrary(mux *http.ServeMux, flow *pairing.Flow, conn *connector.Connector) {
-	a := &access{flow: flow, conn: conn}
+func routeLibrary(mux *http.ServeMux, a *access) {
 	mux.HandleFunc("GET /api/library/folder", func(w http.ResponseWriter, r *http.Request) {
 		lib, err := a.open()
 		if err != nil {
