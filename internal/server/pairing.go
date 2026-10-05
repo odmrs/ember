@@ -155,6 +155,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &mismatch):
 		writeErrorCode(w, http.StatusConflict, "host_key_mismatch", err.Error())
+	case errors.Is(err, pairing.ErrNotLocal):
+		writeErrorCode(w, http.StatusBadRequest, "address_not_local", err.Error())
 	case errors.Is(err, pairing.ErrBadAddress):
 		writeErrorCode(w, http.StatusBadRequest, "bad_address", err.Error())
 	case errors.Is(err, pairing.ErrAlreadyPaired):

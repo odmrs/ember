@@ -3,7 +3,9 @@ package pairing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"sync"
@@ -19,6 +21,7 @@ const scanTimeout = time.Minute
 // Errors a pairing step can end with, besides device.HostKeyMismatchError.
 var (
 	ErrBadAddress     = errors.New("pairing: invalid address")
+	ErrNotLocal       = errors.New("pairing: not an address on the local network")
 	ErrAlreadyPaired  = errors.New("pairing: a device is already paired")
 	ErrUnknownDevice  = errors.New("pairing: not a device found by the last search")
 	ErrKeyNotAccepted = errors.New("pairing: the device accepts neither ember's key nor a passwordless login")
@@ -49,6 +52,9 @@ type Config struct {
 	// Targets lists the "host:port" addresses a LAN search probes. Nil means
 	// LocalTargets.
 	Targets func(ports []int) ([]string, error)
+	// LookupHost resolves a host name typed by the user. Nil means the
+	// system resolver.
+	LookupHost func(ctx context.Context, host string) ([]string, error)
 }
 
 // Flow runs pairing for the dashboard: search, confirm, lock. It is safe for
@@ -66,6 +72,9 @@ type Flow struct {
 func NewFlow(cfg Config) *Flow {
 	if cfg.Targets == nil {
 		cfg.Targets = LocalTargets
+	}
+	if cfg.LookupHost == nil {
+		cfg.LookupHost = net.DefaultResolver.LookupHost
 	}
 	return &Flow{cfg: cfg, state: State{Phase: PhaseIdle, Candidates: []Candidate{}}}
 }
@@ -98,7 +107,8 @@ func (f *Flow) PublicKey() (string, error) {
 // Scan starts a search in the background and returns at once; State reports
 // progress. An empty address searches the local network on the default port
 // and on port, if given; otherwise only address ("host" or "host:port") is
-// probed. A new Scan cancels the previous one.
+// probed, and only if it is on the local network (see localAddrs). A new Scan
+// cancels the previous one.
 func (f *Flow) Scan(address string, port int) error {
 	if _, err := f.cfg.Store.Load(); err == nil {
 		return ErrAlreadyPaired
@@ -112,7 +122,11 @@ func (f *Flow) Scan(address string, port int) error {
 		if err != nil {
 			return err
 		}
-		targets = func() ([]string, error) { return []string{hostport}, nil }
+		addrs, err := f.localAddrs(hostport)
+		if err != nil {
+			return err
+		}
+		targets = func() ([]string, error) { return addrs, nil }
 	} else {
 		ports := []int{profile.DefaultPort}
 		if port != 0 && port != profile.DefaultPort {
@@ -171,6 +185,47 @@ func normalizeAddress(address string, port int) (string, error) {
 		return "", ErrBadAddress
 	}
 	return net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
+// lookupWait bounds resolving a host name the user typed.
+const lookupWait = 5 * time.Second
+
+// localAddrs turns a "host:port" the user typed into the addresses to probe,
+// refusing any that is not on the local network: a private (RFC 1918 or
+// fc00::/7), link-local or loopback address. A host name is resolved here,
+// once, and must resolve only to such addresses; the probe then dials those
+// addresses, so a second lookup cannot point it elsewhere.
+func (f *Flow) localAddrs(hostport string) ([]string, error) {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return nil, ErrBadAddress
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !isLocal(ip) {
+			return nil, fmt.Errorf("%w: %s", ErrNotLocal, host)
+		}
+		return []string{hostport}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lookupWait)
+	defer cancel()
+	names, err := f.cfg.LookupHost(ctx, host)
+	if err != nil || len(names) == 0 {
+		return nil, fmt.Errorf("%w: %s does not resolve", ErrBadAddress, host)
+	}
+	var out []string
+	for _, n := range names {
+		ip, err := netip.ParseAddr(n)
+		if err != nil || !isLocal(ip) {
+			return nil, fmt.Errorf("%w: %s resolves to %s", ErrNotLocal, host, n)
+		}
+		out = append(out, net.JoinHostPort(ip.String(), port))
+	}
+	return out, nil
+}
+
+func isLocal(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback()
 }
 
 // Confirm pairs with the candidate the user picked, identified by address and

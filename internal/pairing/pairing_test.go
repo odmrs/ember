@@ -370,6 +370,62 @@ func TestScanRejectsBadAddresses(t *testing.T) {
 	}
 }
 
+// A typed address is only probed when it is on the local network. The
+// check is called directly, so nothing here dials: literals need no lookup,
+// and names go to a resolver that answers from a table.
+func TestOnlyLocalAddressesAreProbed(t *testing.T) {
+	f, _ := newFlow(t)
+	names := map[string][]string{
+		"kindle.lan":  {"192.168.1.20", "fe80::1"},
+		"mixed.lan":   {"192.168.1.20", "8.8.8.8"},
+		"mapped.lan":  {"::ffff:93.184.216.34"},
+		"nowhere.lan": {},
+	}
+	f.cfg.LookupHost = func(_ context.Context, host string) ([]string, error) {
+		if a, ok := names[host]; ok {
+			return a, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	check := func(address string) ([]string, error) {
+		hostport, err := normalizeAddress(address, 0)
+		if err != nil {
+			return nil, err
+		}
+		return f.localAddrs(hostport)
+	}
+	local := []string{
+		"10.0.0.7", "172.16.0.1", "172.31.255.254", "192.168.0.42:22", "169.254.10.10",
+		"127.0.0.1", "[::1]:2222", "fd12:3456::1", "[fe80::1]:2222", "::ffff:192.168.1.5",
+	}
+	for _, a := range local {
+		if _, err := check(a); err != nil {
+			t.Errorf("%q: %v", a, err)
+		}
+	}
+	if got, err := check("kindle.lan:22"); err != nil || strings.Join(got, " ") != "192.168.1.20:22 [fe80::1]:22" {
+		t.Errorf("kindle.lan: %v, %v", got, err)
+	}
+	remote := []string{
+		"8.8.8.8", "1.1.1.1:2222", "100.64.0.1", "172.32.0.1", "192.0.2.1", "0.0.0.0", "224.0.0.1",
+		"2001:db8::1", "[2606:4700::1111]:22", "ff02::1", "::ffff:8.8.8.8", "mixed.lan", "mapped.lan",
+	}
+	for _, a := range remote {
+		if _, err := check(a); !errors.Is(err, ErrNotLocal) {
+			t.Errorf("%q: err = %v, want ErrNotLocal", a, err)
+		}
+		// Scan refuses it before probing anything.
+		if err := f.Scan(a, 0); !errors.Is(err, ErrNotLocal) {
+			t.Errorf("Scan(%q): err = %v, want ErrNotLocal", a, err)
+		}
+	}
+	for _, a := range []string{"nowhere.lan", "unknown.lan"} {
+		if _, err := check(a); !errors.Is(err, ErrBadAddress) {
+			t.Errorf("%q: err = %v, want ErrBadAddress", a, err)
+		}
+	}
+}
+
 func TestNormalizeAddress(t *testing.T) {
 	cases := map[string]string{
 		"192.168.0.42":    "192.168.0.42:2222",

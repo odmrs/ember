@@ -146,6 +146,9 @@ func TestPairingRequestsNeedJSON(t *testing.T) {
 	if rec := post(t, h, "/api/pair/scan", `{"address":"; reboot"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad address: status = %d", rec.Code)
 	}
+	if rec := post(t, h, "/api/pair/scan", `{"address":"8.8.8.8"}`); rec.Code != http.StatusBadRequest || errorCode(t, rec.Body.Bytes()) != "address_not_local" {
+		t.Errorf("public address: %d %s", rec.Code, rec.Body)
+	}
 	if rec := post(t, h, "/api/pair/scan", `{"nope":1}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown field: status = %d", rec.Code)
 	}
