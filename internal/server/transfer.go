@@ -16,6 +16,9 @@ import (
 // size is the Content-Length, which the dashboard always sends. No timeout
 // applies to the body, so a large file over slow Wi-Fi is never cut off.
 //
+// The check answers with the name the upload is to be sent under: the clean
+// name of a Book unless the Profile keeps uploads' own names.
+//
 // A download is a GET: it changes nothing, and the guard still refuses it
 // from any other site.
 func routeTransfer(mux *http.ServeMux, a *access) {
@@ -31,7 +34,11 @@ func routeTransfer(mux *http.ServeMux, a *access) {
 			writeError(w, err)
 			return
 		}
-		arrival, err := lib.CheckUpload(q.Get("folder"), q.Get("name"), size)
+		name := q.Get("name")
+		if p, err := a.flow.Profile(); err == nil && !p.RawUploadNames {
+			name = library.UploadName(name)
+		}
+		arrival, err := lib.CheckUpload(q.Get("folder"), name, size)
 		if err != nil {
 			writeError(w, err)
 			return

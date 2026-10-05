@@ -406,7 +406,13 @@ func (d *dirFS) Create(p string) (io.WriteCloser, error) {
 	return os.OpenFile(d.Path(p), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 }
 
-func (d *dirFS) Open(p string) (io.ReadCloser, error) { return os.Open(d.Path(p)) }
+func (d *dirFS) Open(p string) (File, error) {
+	f, err := os.Open(d.Path(p))
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
 
 func (d *dirFS) Mkdir(p string) error         { return os.Mkdir(d.Path(p), 0o755) }
 func (d *dirFS) Rename(from, to string) error { return os.Rename(d.Path(from), d.Path(to)) }

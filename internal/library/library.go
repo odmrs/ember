@@ -47,8 +47,15 @@ type FS interface {
 	// already exists and never truncates. Copying into it streams: nothing
 	// holds the whole file in memory.
 	Create(path string) (io.WriteCloser, error)
-	// Open opens a file for reading.
-	Open(path string) (io.ReadCloser, error)
+	// Open opens a file for reading, from the start or at any offset.
+	Open(path string) (File, error)
+}
+
+// File is an open file. ReadAt lets a Book's metadata be read without
+// reading the whole Book.
+type File = interface {
+	io.ReadCloser
+	io.ReaderAt
 }
 
 // Errors returned for Library paths.

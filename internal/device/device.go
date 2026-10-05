@@ -284,9 +284,16 @@ func (f newFile) ReadFrom(r io.Reader) (int64, error) {
 }
 
 // Open opens a file for reading. Copying from it with io.Copy reads with
-// several requests in flight.
-func (d *Device) Open(path string) (io.ReadCloser, error) {
-	return d.sftp.Open(path)
+// several requests in flight; ReadAt reads one piece without the rest.
+func (d *Device) Open(path string) (interface {
+	io.ReadCloser
+	io.ReaderAt
+}, error) {
+	f, err := d.sftp.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 // Remove deletes a file, a symbolic link itself, or an empty directory.

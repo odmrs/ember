@@ -90,6 +90,7 @@ const ERRORS = {
   address_not_local: "err.addressNotLocal",
   key_wait_timeout: "err.keyWaitTimeout",
   move_incomplete: "err.moveIncomplete",
+  rename_incomplete: "err.renameIncomplete",
   server_down: "err.serverDown",
   internal: "err.internal",
   not_linked: "err.notLinked",

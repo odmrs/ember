@@ -77,6 +77,23 @@ func routeLibrary(mux *http.ServeMux, a *access) {
 		writeJSON(w, p)
 	})
 
+	mux.HandleFunc("GET /api/library/clean", func(w http.ResponseWriter, r *http.Request) {
+		lib, err := a.open()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		ps, err := lib.ProposeNames(r.URL.Query().Get("path"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if ps == nil {
+			ps = []library.Proposal{}
+		}
+		writeJSON(w, map[string]any{"proposals": ps})
+	})
+
 	routeTransfer(mux, a)
 
 	open, mu := a.open, &a.mu
@@ -86,6 +103,13 @@ func routeLibrary(mux *http.ServeMux, a *access) {
 	})
 	routeWrite(mux, "POST /api/library/rename", open, mu, func(lib *library.Library, req renameRequest) (opResult, error) {
 		warns, err := lib.Rename(req.Path, req.Name, library.Options{ConfirmOpen: req.ConfirmOpen})
+		return opResult{Warnings: warns}, err
+	})
+	routeWrite(mux, "POST /api/library/rename-all", open, mu, func(lib *library.Library, req renameAllRequest) (opResult, error) {
+		if len(req.Changes) == 0 {
+			return opResult{}, errNoPaths
+		}
+		warns, err := lib.RenameAll(req.Changes, library.Options{ConfirmOpen: req.ConfirmOpen})
 		return opResult{Warnings: warns}, err
 	})
 	routeWrite(mux, "POST /api/library/move", open, mu, func(lib *library.Library, req moveRequest) (opResult, error) {
@@ -126,6 +150,12 @@ type renameRequest struct {
 	ConfirmOpen bool   `json:"confirmOpen"`
 }
 
+type renameAllRequest struct {
+	inView
+	Changes     []library.NameChange `json:"changes"`
+	ConfirmOpen bool                 `json:"confirmOpen"`
+}
+
 type moveRequest struct {
 	inView
 	Paths       []string `json:"paths"`
@@ -155,11 +185,20 @@ func routeWrite[T interface{ view() string }](mux *http.ServeMux, pattern string
 		mu.Lock()
 		defer mu.Unlock()
 		res, err := apply(lib, req)
-		var moveErr *library.MoveError
-		if errors.As(err, &moveErr) {
+		var (
+			moveErr   *library.MoveError
+			renameErr *library.RenameError
+			ans       map[string]any
+		)
+		switch {
+		case errors.As(err, &moveErr):
+			ans = map[string]any{"error": "move_incomplete", "message": err.Error(), "moved": moveErr.Moved, "failed": moveErr.Failed, "folder": nil}
+		case errors.As(err, &renameErr):
+			ans = map[string]any{"error": "rename_incomplete", "message": err.Error(), "renamed": renameErr.Renamed, "failed": renameErr.Failed, "folder": nil}
+		}
+		if ans != nil {
 			// Part of the batch went: the dashboard needs the folder as it is
 			// now as much as the error.
-			ans := map[string]any{"error": "move_incomplete", "message": err.Error(), "moved": moveErr.Moved, "failed": moveErr.Failed, "folder": nil}
 			if f, lerr := lib.List(req.view()); lerr == nil {
 				ans["folder"] = f
 			}
