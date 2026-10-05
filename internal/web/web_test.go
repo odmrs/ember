@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/odmrs/ember/internal/library"
 )
 
 func catalog(t *testing.T, lang string) map[string]string {
@@ -89,4 +91,24 @@ func read(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(src)
+}
+
+// The dashboard builds these keys from codes the server sends, so the
+// catalog check above cannot see them.
+func TestEveryServerCodeHasAMessage(t *testing.T) {
+	en := catalog(t, "en")
+	reasons := []string{
+		library.ReasonEmpty, library.ReasonDots, library.ReasonEncoding, library.ReasonReserved, library.ReasonControl,
+		library.ReasonTrailing, library.ReasonTooLong, library.ReasonHidden, library.ReasonSidecar,
+	}
+	for _, r := range reasons {
+		if _, ok := en["err.name."+r]; !ok {
+			t.Errorf("no message for name reason %q", r)
+		}
+	}
+	for _, w := range []string{library.WarnSidecarShared, library.WarnSidecarLeft} {
+		if _, ok := en["warn."+w]; !ok {
+			t.Errorf("no message for warning %q", w)
+		}
+	}
 }

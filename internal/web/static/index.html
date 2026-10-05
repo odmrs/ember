@@ -91,6 +91,7 @@
   <section class="box hero" id="hero">
     <span class="path" id="path">—</span>
     <span class="tag">KOREADER</span>
+    <span class="tag meta" id="meta" hidden></span>
     <span class="big" id="book-count">0</span>
     <span class="dim" data-i18n="books"></span>
     <span class="right">
@@ -127,18 +128,29 @@
         <span class="label"><span data-i18n="files"></span><span id="files-where"></span></span>
         <div class="toolbar">
           <button type="button" disabled data-i18n="upload"></button>
-          <button type="button" disabled data-i18n="newFolder"></button>
+          <button type="button" id="tb-folder" data-action="new-folder" disabled data-i18n="newFolder"></button>
           <button type="button" disabled data-i18n="download"></button>
-          <button type="button" disabled data-i18n="delete"></button>
+          <button type="button" id="tb-delete" data-action="delete" disabled data-i18n="delete"></button>
         </div>
       </div>
       <table class="list">
-        <thead><tr><th data-i18n="col.name"></th><th class="num" data-i18n="col.size"></th></tr></thead>
+        <thead><tr><th data-i18n="col.name"></th><th class="num" data-i18n="col.size"></th><th class="act"></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
       <p class="empty dim" id="empty" data-i18n="emptyFolder" hidden></p>
     </section>
   </main>
+
+  <dialog class="box dialog" id="dialog">
+    <form method="dialog">
+      <div class="head"><span class="label" id="dialog-title"></span></div>
+      <div class="dialog-body" id="dialog-body"></div>
+      <div class="actions">
+        <button type="submit" value="cancel" class="secondary" data-i18n="cancel"></button>
+        <button type="submit" value="ok" class="danger" id="dialog-ok"></button>
+      </div>
+    </form>
+  </dialog>
 
   <div class="box wire"><span class="label" data-i18n="log"></span><span id="log" data-i18n="log.ready"></span></div>
   <footer class="box status"><span id="device-line">—</span><span id="version-line"></span></footer>

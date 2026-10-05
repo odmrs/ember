@@ -7,10 +7,16 @@ function t(key) {
   return messages[key] ?? key;
 }
 
+// fill puts values into a message's {placeholders}.
+function fill(text, values) {
+  return text.replace(/\{(\w+)\}/g, (m, k) => values[k] ?? m);
+}
+
 class APIError extends Error {
-  constructor(code, message) {
+  constructor(code, message, data) {
     super(message);
     this.code = code;
+    this.data = data ?? {};
   }
 }
 
@@ -22,7 +28,7 @@ async function api(path, body) {
   };
   const res = await fetch(path, init);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new APIError(data.error ?? "internal", data.message ?? `${path}: ${res.status}`);
+  if (!res.ok) throw new APIError(data.error ?? "internal", data.message ?? `${path}: ${res.status}`, data);
   return data;
 }
 
@@ -67,7 +73,21 @@ const ERRORS = {
   outside_library: "err.outsideLibrary",
   not_found: "err.notFound",
   not_folder: "err.notFolder",
+  collision: "err.collision",
+  open_now_needs_confirm: "err.openNow",
+  metadata_mode_unsupported: "err.metadataMode",
+  into_itself: "err.intoItself",
+  library_root: "err.libraryRoot",
+  extension_change: "err.extensionChange",
+  partial_failure: "err.partial",
+  bad_request: "err.badRequest",
 };
+
+// errorText is an API error as the user reads it; a refused name says why.
+function errorText(err) {
+  if (err.code === "invalid_name") return t(`err.name.${err.data.reason}`);
+  return t(ERRORS[err.code] ?? "err.internal");
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -204,7 +224,10 @@ const lib = {
   stats: null,
   children: new Map(), // folder path -> its subfolders, filled as folders are read
   expanded: new Set([""]),
-  selected: null,
+  sel: new Set(), // selected Library paths in the open folder
+  anchor: null, // where a shift-click range starts
+  edit: null, // {kind: "new"} or {kind: "rename", path}, with the typed value
+  busy: false, // a change is on its way to the Device
   seq: 0,
 };
 
@@ -240,7 +263,8 @@ async function openFolder(p) {
   try {
     const f = await readFolder(p);
     if (seq !== lib.seq) return;
-    Object.assign(lib, { path: f.path, folder: f, selected: null });
+    if (f.path !== lib.path) Object.assign(lib, { sel: new Set(), anchor: null, edit: null });
+    Object.assign(lib, { path: f.path, folder: f });
     history.replaceState(null, "", f.path ? `#${encodeURIComponent(f.path)}` : location.pathname);
     for (const a of ancestors(f.path)) lib.expanded.add(a);
     render();
@@ -277,11 +301,17 @@ function renderHero(d) {
   $("free").textContent = bytes(lib.stats ? lib.stats.freeBytes : d.survey.freeBytes);
   $("book-count").textContent = lib.folder?.books ?? 0;
   $("folder-count").textContent = lib.folder?.folders ?? 0;
+  const mode = lib.stats?.metadataMode ?? "doc";
+  const meta = $("meta");
+  meta.hidden = mode === "doc";
+  meta.textContent = `${t("meta.tag")} ${mode.toUpperCase()}`;
+  meta.title = t(mode === "hash" ? "meta.hash" : "meta.dir");
+  meta.classList.toggle("warn", mode !== "hash");
 }
 
 function treeNode(p, name, depth, subfolders) {
   const open = lib.expanded.has(p);
-  const node = el("div", { class: p === lib.path ? "node on" : "node" });
+  const node = el("div", { class: p === lib.path ? "node on" : "node", "data-drop": p });
   node.style.setProperty("--depth", depth);
   const caret = subfolders > 0 || subfolders < 0
     ? el("button", { type: "button", class: "caret", "data-action": "toggle", "data-path": p, "aria-expanded": open }, open ? "▾" : "▸")
@@ -300,21 +330,35 @@ function itemCount(e) {
   return `${e.items} ${t(e.items === 1 ? "folder.item" : "folder.items")}`;
 }
 
+function nameInput(value) {
+  return el("input", { class: "name-edit", id: "name-edit", value, autocomplete: "off", spellcheck: "false" });
+}
+
 function fileRow(e) {
   const name = el("td", { class: "name" });
-  const tr = el("tr", { class: e.kind, "data-select": e.path }, name);
-  if (e.path === lib.selected) tr.classList.add("sel");
+  const tr = el("tr", { class: e.kind, "data-select": e.path, draggable: "true" }, name);
+  if (lib.sel.has(e.path)) tr.classList.add("sel");
+  const editing = lib.edit?.kind === "rename" && lib.edit.path === e.path;
+  if (editing) {
+    name.append(nameInput(lib.edit.value));
+  } else if (e.kind === "folder") {
+    name.append(el("button", { type: "button", class: "go", "data-action": "open", "data-path": e.path }, `▸ ${e.name}`));
+  } else {
+    name.append(e.name);
+  }
   if (e.kind === "folder") {
     tr.dataset.folder = e.path;
-    name.append(el("button", { type: "button", class: "go", "data-action": "open", "data-path": e.path }, `▸ ${e.name}`));
+    tr.dataset.drop = e.path;
     tr.append(el("td", { class: "num dim" }, itemCount(e)));
-    return tr;
+  } else {
+    if (!editing && e.format) name.append(el("span", { class: "ext" }, e.format));
+    if (e.openNow) name.append(el("span", { class: "open-now" }, t("openNow")));
+    if (e.kind === "other") tr.title = t("otherHint");
+    tr.append(el("td", { class: "num" }, bytes(e.size)));
   }
-  name.append(e.name);
-  if (e.format) name.append(el("span", { class: "ext" }, e.format));
-  if (e.openNow) name.append(el("span", { class: "open-now" }, t("openNow")));
-  if (e.kind === "other") tr.title = t("otherHint");
-  tr.append(el("td", { class: "num" }, bytes(e.size)));
+  tr.append(el("td", { class: "act" }, el("span", { class: "rowact" },
+    el("button", { type: "button", "data-action": "rename", "data-path": e.path }, t("rename")),
+    el("button", { type: "button", class: "bad", "data-action": "delete-one", "data-path": e.path }, t("del")))));
   return tr;
 }
 
@@ -326,13 +370,222 @@ function renderLibrary() {
   const rows = [];
   if (lib.folder && lib.path) {
     const up = parentOf(lib.path);
-    rows.push(el("tr", { class: "folder up", "data-folder": up },
+    rows.push(el("tr", { class: "folder up", "data-folder": up, "data-drop": up },
       el("td", { class: "name" }, el("button", { type: "button", class: "go", "data-action": "open", "data-path": up }, "↑ ..")),
-      el("td", {})));
+      el("td", {}), el("td", {})));
+  }
+  if (lib.edit?.kind === "new") {
+    const input = nameInput(lib.edit.value);
+    input.placeholder = t("newFolder.placeholder");
+    rows.push(el("tr", { class: "folder new" }, el("td", { class: "name" }, "▸ ", input), el("td", {}), el("td", {})));
   }
   for (const e of lib.folder?.entries ?? []) rows.push(fileRow(e));
   $("rows").replaceChildren(...rows);
-  $("empty").hidden = !lib.folder || lib.folder.entries.length > 0;
+  $("empty").hidden = !lib.folder || lib.folder.entries.length > 0 || lib.edit?.kind === "new";
+  $("tb-folder").disabled = !lib.folder || lib.busy;
+  $("tb-delete").disabled = lib.sel.size === 0 || lib.busy;
+
+  const input = $("name-edit");
+  if (input && !input.dataset.focused) {
+    input.dataset.focused = "1";
+    input.focus();
+    input.setSelectionRange(lib.edit.selStart ?? 0, lib.edit.selEnd ?? input.value.length);
+  }
+}
+
+// Selection follows file managers: click picks one, Cmd/Ctrl-click toggles,
+// Shift-click takes the range from the last plain click.
+function select(p, e) {
+  if (e.shiftKey && lib.anchor) {
+    const order = (lib.folder?.entries ?? []).map((x) => x.path);
+    const [a, b] = [order.indexOf(lib.anchor), order.indexOf(p)].sort((x, y) => x - y);
+    if (a >= 0) {
+      lib.sel = new Set(order.slice(a, b + 1));
+      return markSelection();
+    }
+  }
+  if (e.metaKey || e.ctrlKey) {
+    if (lib.sel.has(p)) lib.sel.delete(p);
+    else lib.sel.add(p);
+  } else {
+    lib.sel = new Set([p]);
+  }
+  lib.anchor = p;
+  markSelection();
+}
+
+// markSelection updates the rows in place: rebuilding them would drop a
+// drag that is starting, and the second click of a double-click.
+function markSelection() {
+  for (const tr of $("rows").querySelectorAll("tr[data-select]")) tr.classList.toggle("sel", lib.sel.has(tr.dataset.select));
+  $("tb-delete").disabled = lib.sel.size === 0 || lib.busy;
+}
+
+const entryAt = (p) => lib.folder?.entries.find((e) => e.path === p);
+
+function startNewFolder() {
+  if (!lib.folder || lib.busy) return;
+  lib.edit = { kind: "new", value: "" };
+  renderLibrary();
+}
+
+function startRename(p) {
+  const e = entryAt(p);
+  if (!e || lib.busy) return;
+  // Select the name without its extension, as file managers do.
+  const ext = e.kind === "book" && e.format ? e.format.length + 1 : 0;
+  lib.edit = { kind: "rename", path: p, value: e.name, selStart: 0, selEnd: e.name.length - ext };
+  lib.sel = new Set([p]);
+  lib.anchor = p;
+  renderLibrary();
+}
+
+function cancelEdit() {
+  if (!lib.edit) return;
+  lib.edit = null;
+  renderLibrary();
+}
+
+async function commitEdit() {
+  const edit = lib.edit;
+  if (!edit || lib.busy) return;
+  if (edit.kind === "new") {
+    const res = await change("mkdir", { parent: lib.path, name: edit.value }, edit);
+    if (res) log(fill(t("log.created"), { name: edit.value }));
+    return;
+  }
+  const e = entryAt(edit.path);
+  if (!e || edit.value === e.name) return cancelEdit();
+  const res = await withOpenConfirm(e.openNow, (confirmOpen) =>
+    change("rename", { path: edit.path, name: edit.value, confirmOpen }, edit));
+  if (!res) return;
+  lib.sel = new Set([lib.path ? `${lib.path}/${edit.value}` : edit.value]);
+  log(fill(t("log.renamed"), { from: e.name, to: edit.value }) + warnings(res));
+  renderLibrary();
+}
+
+// change sends one write and shows the folder as the Device now has it. On
+// failure it logs why and resolves to null, keeping an edit open so the
+// name can be fixed.
+async function change(op, body, edit) {
+  lib.busy = true;
+  renderLibrary();
+  try {
+    const res = await api(`api/library/${op}`, { ...body, view: lib.path });
+    if (lib.edit === edit) lib.edit = null;
+    applyChange(res);
+    return res;
+  } catch (err) {
+    if (err.code === "open_now_needs_confirm") throw err;
+    log(`${errorText(err)} ${err.code === "invalid_name" ? "" : err.message}`.trim());
+    if (err.code === "not_found") refreshAfterChange();
+    return null;
+  } finally {
+    lib.busy = false;
+    renderLibrary();
+  }
+}
+
+function applyChange(res) {
+  if (res.folder) {
+    lib.folder = res.folder;
+    lib.children.set(res.folder.path, res.folder.entries.filter((e) => e.kind === "folder"));
+    const present = new Set(res.folder.entries.map((e) => e.path));
+    lib.sel = new Set([...lib.sel].filter((p) => present.has(p)));
+  }
+  refreshAfterChange();
+}
+
+// Other folders in the tree may have gained or lost subfolders.
+function refreshAfterChange() {
+  if (!lib.folder) return openFolder("");
+  for (const p of [...lib.expanded]) {
+    if (p === lib.path) continue;
+    readFolder(p).then(render, () => {
+      lib.expanded.delete(p);
+      lib.children.delete(p);
+      render();
+    });
+  }
+  api("api/library/stats").then((s) => { lib.stats = s; render(); }, () => {});
+  render();
+}
+
+// withOpenConfirm runs a change that may touch the Book KOReader has open.
+// It asks first when the listing already says so, and again if the Device
+// says so.
+async function withOpenConfirm(known, run, why = t("dlg.openMove")) {
+  const confirmed = () => ask({ title: t("dlg.openTitle"), body: [why], ok: t("dlg.goAhead") });
+  if (known && !(await confirmed())) return cancelEdit();
+  try {
+    return await run(known);
+  } catch (err) {
+    if (err.code !== "open_now_needs_confirm") throw err;
+    if (!(await confirmed())) return cancelEdit();
+    return run(true);
+  }
+}
+
+function warnings(res) {
+  return (res.warnings ?? []).map((w) => " · " + fill(t(`warn.${w.code}`), { path: baseName(w.path) })).join("");
+}
+
+function counted(n, name) {
+  return n === 1 ? name : `${n} ${t("folder.items")}`;
+}
+
+async function move(paths, to) {
+  if (lib.busy || !paths?.length) return;
+  const open = paths.some((p) => entryAt(p)?.openNow || (entryAt(p)?.kind === "folder" && lib.stats?.openNow?.startsWith(p + "/")));
+  const res = await withOpenConfirm(open, (confirmOpen) => change("move", { paths, to, confirmOpen }));
+  if (!res) return;
+  const where = to ? baseName(to) : `/ ${baseName(status.device?.libraryRoot ?? "")}`;
+  log(fill(t("log.moved"), { what: counted(paths.length, baseName(paths[0])), to: where }) + warnings(res));
+}
+
+// remove asks first, showing what goes: Book and folder counts, the
+// progress that dies with the Books, and the open Book if it is among them.
+async function remove(paths) {
+  if (lib.busy || !paths.length) return;
+  let p;
+  try {
+    p = await api(`api/library/preview?${paths.map((x) => "path=" + encodeURIComponent(x)).join("&")}`);
+  } catch (err) {
+    return log(`${errorText(err)} ${err.message}`);
+  }
+  const what = counted(paths.length, baseName(paths[0]));
+  const body = [fill(t("dlg.deleteBody"), { what })];
+  const counts = el("div", { class: "counts" });
+  for (const [key, n] of [["dlg.books", p.books], ["dlg.folders", p.folders], ["dlg.others", p.others]]) {
+    if (n) counts.append(row(t(key), String(n)));
+  }
+  body.push(counts);
+  if (p.books) body.push(t("dlg.progressLost"));
+  body.push(t("dlg.cannotUndo"));
+  const ok = await ask({
+    title: fill(t("dlg.deleteTitle"), { what }),
+    body,
+    warn: p.openNow ? t("dlg.openDelete") : "",
+    ok: t("delete"),
+  });
+  if (!ok) return;
+  // KOReader may have opened one of them since the preview.
+  const res = await withOpenConfirm(false, (confirmOpen) => change("delete", { paths, confirmOpen: p.openNow || confirmOpen }), t("dlg.openDelete"));
+  if (res) log(fill(t("log.deleted"), { what }) + warnings(res));
+}
+
+// ask shows the confirm dialog and resolves to true when the user confirms.
+function ask({ title, body, warn, ok }) {
+  const d = $("dialog");
+  $("dialog-title").textContent = title;
+  const content = body.map((b) => typeof b === "string" ? el("p", {}, b) : b);
+  if (warn) content.push(el("p", { class: "warn" }, warn));
+  $("dialog-body").replaceChildren(...content);
+  $("dialog-ok").textContent = ok;
+  d.returnValue = "";
+  d.showModal();
+  d.querySelector("[value=cancel]").focus();
+  return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }));
 }
 
 function log(text) {
@@ -424,15 +677,16 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-action]");
   if (!b) {
     const row = e.target.closest("tr[data-select]");
-    if (row) {
-      lib.selected = row.dataset.select;
-      renderLibrary();
-    }
+    if (row && !e.target.closest("input")) select(row.dataset.select, e);
     return;
   }
   switch (b.dataset.action) {
     case "open": return openFolder(b.dataset.path);
     case "toggle": return toggleFolder(b.dataset.path);
+    case "new-folder": return startNewFolder();
+    case "delete": return remove([...lib.sel]);
+    case "delete-one": return remove([b.dataset.path]);
+    case "rename": return startRename(b.dataset.path);
     case "search": return search("");
     case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint);
     case "finish":
@@ -444,9 +698,110 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// Double-click opens a folder and renames anything else.
 $("rows").addEventListener("dblclick", (e) => {
+  if (e.target.closest("input, button")) return;
   const row = e.target.closest("tr[data-folder]");
-  if (row) openFolder(row.dataset.folder);
+  if (row) return openFolder(row.dataset.folder);
+  const item = e.target.closest("tr[data-select]");
+  if (item) startRename(item.dataset.select);
+});
+
+$("rows").addEventListener("input", (e) => {
+  if (!lib.edit || e.target.id !== "name-edit") return;
+  Object.assign(lib.edit, { value: e.target.value, selStart: e.target.selectionStart, selEnd: e.target.selectionEnd });
+});
+
+$("rows").addEventListener("keydown", (e) => {
+  if (e.target.id !== "name-edit") return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitEdit();
+  } else if (e.key === "Escape") {
+    cancelEdit();
+  }
+});
+
+// Leaving the field drops the edit, unless a change is already on its way.
+// Chrome also fires focusout while a render is replacing the field, so the
+// check waits until the render is over and only counts a field still shown.
+$("rows").addEventListener("focusout", (e) => {
+  const input = e.target;
+  if (input.id !== "name-edit") return;
+  setTimeout(() => {
+    if (!lib.busy && lib.edit && input.isConnected && document.activeElement !== input) cancelEdit();
+  });
+});
+
+document.addEventListener("keydown", (e) => {
+  if ($("library").hidden || $("dialog").open || e.target.closest("input, textarea")) return;
+  // A Mac's delete key sends Backspace; Cmd+Backspace is Finder's delete.
+  if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    if (lib.sel.size) remove([...lib.sel]);
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "n" || e.key === "N") {
+    e.preventDefault();
+    startNewFolder();
+  } else if (e.key === "F2") {
+    e.preventDefault();
+    if (lib.sel.size === 1) startRename([...lib.sel][0]);
+  } else if (e.key === "Escape" && lib.sel.size) {
+    lib.sel = new Set();
+    markSelection();
+  }
+});
+
+// Rows drag onto folder rows, the ".." row and folders in the tree.
+let dragging = null;
+
+$("rows").addEventListener("dragstart", (e) => {
+  const row = e.target.closest?.("tr[data-select]");
+  if (!row || lib.busy || lib.edit) return e.preventDefault();
+  const p = row.dataset.select;
+  if (!lib.sel.has(p)) {
+    lib.sel = new Set([p]);
+    lib.anchor = p;
+    markSelection();
+  }
+  dragging = [...lib.sel];
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", dragging.map(baseName).join("\n"));
+});
+
+document.addEventListener("dragend", () => {
+  dragging = null;
+  for (const d of document.querySelectorAll(".drop")) d.classList.remove("drop");
+});
+
+function dropTarget(e) {
+  const target = e.target.closest?.("[data-drop]");
+  if (!target || !dragging) return null;
+  const to = target.dataset.drop;
+  // Not where they already are, and no folder into itself.
+  if (to === lib.path || dragging.some((p) => to === p || to.startsWith(p + "/"))) return null;
+  return target;
+}
+
+document.addEventListener("dragover", (e) => {
+  const target = dropTarget(e);
+  for (const d of document.querySelectorAll(".drop")) if (d !== target) d.classList.remove("drop");
+  if (!target) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  target.classList.add("drop");
+});
+
+document.addEventListener("drop", (e) => {
+  const target = dropTarget(e);
+  const paths = dragging;
+  if (!target) return;
+  e.preventDefault();
+  target.classList.remove("drop");
+  dragging = null;
+  move(paths, target.dataset.drop);
 });
 
 $("manual").addEventListener("submit", (e) => {
