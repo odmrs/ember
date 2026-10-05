@@ -6,13 +6,32 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/odmrs/ember/internal/pairing"
+	"github.com/odmrs/ember/internal/profile"
 )
 
 const self = "127.0.0.1:8737"
 
+func newFlow(t *testing.T) (*pairing.Flow, *profile.Store) {
+	t.Helper()
+	store, err := profile.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No test may scan the real network.
+	noLAN := func([]int) ([]string, error) { return nil, nil }
+	return pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), store
+}
+
 func do(t *testing.T, method, path, host, origin string, headers ...string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, path, nil)
+	flow, _ := newFlow(t)
+	return call(New(self, "test", flow), method, path, host, origin, "", headers...)
+}
+
+func call(h http.Handler, method, path, host, origin, body string, headers ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Host = host
 	if origin != "" {
 		req.Header.Set("Origin", origin)
@@ -21,7 +40,7 @@ func do(t *testing.T, method, path, host, origin string, headers ...string) *htt
 		req.Header.Set(headers[i], headers[i+1])
 	}
 	rec := httptest.NewRecorder()
-	New(self, "test").ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -106,7 +125,8 @@ func TestRefusesNonLoopbackAddress(t *testing.T) {
 					t.Errorf("New(%q) did not panic", addr)
 				}
 			}()
-			New(addr, "test")
+			flow, _ := newFlow(t)
+			New(addr, "test", flow)
 		}()
 	}
 }
