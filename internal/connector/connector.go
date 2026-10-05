@@ -266,16 +266,17 @@ type found struct {
 	addr string
 }
 
-// search is a network search in progress.
+// search is a network search in progress, with the login it dials with.
 type search struct {
 	results chan found
 	cancel  context.CancelFunc
+	login   scanLogin
 }
 
-func (c *Connector) startSearch(ctx context.Context, cfg device.Config, port int) *search {
+func (c *Connector) startSearch(ctx context.Context, cfg device.Config, p profile.Profile) *search {
 	ctx, cancel := context.WithTimeout(ctx, scanTimeout)
-	s := &search{results: make(chan found, 1), cancel: cancel}
-	go c.scan(ctx, cfg, port, s.results)
+	s := &search{results: make(chan found, 1), cancel: cancel, login: scanLoginOf(p)}
+	go c.scan(ctx, cfg, p.Port, s.results)
 	return s
 }
 
@@ -341,7 +342,7 @@ func (c *Connector) run(ctx context.Context) {
 				// address keeps its 2s cadence while full sweeps of the network
 				// are spaced out so the LAN is not flooded.
 				if scan == nil && failure != FailAuthRejected && (lastScan == 0 || attempt-lastScan >= scanEveryAttempts) {
-					scan = c.startSearch(ctx, cfg, p.Port)
+					scan = c.startSearch(ctx, cfg, p)
 					lastScan = attempt
 				}
 				c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure, Scanning: scan != nil}, nil)
@@ -356,15 +357,25 @@ func (c *Connector) run(ctx context.Context) {
 			case <-next:
 				break wait
 			case <-c.reload:
+				// The search dials with the old login; the next attempt
+				// starts one with the new.
+				stopScan()
 				break wait
 			case f := <-results():
+				made := scan.login
 				scan.cancel()
 				scan = nil
 				if f.dev == nil {
 					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
 					continue
 				}
-				c.link(ctx, f.dev, f.addr, c.moveTo(f.addr, p))
+				now, ok := c.moveTo(f.addr, made)
+				if !ok {
+					f.dev.Close()
+					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
+					continue
+				}
+				c.link(ctx, f.dev, f.addr, now)
 				attempt, lastScan, failure = 0, 0, ""
 			}
 		}
@@ -412,26 +423,52 @@ func (c *Connector) scan(ctx context.Context, cfg device.Config, port int, out c
 	out <- found{}
 }
 
-// moveTo saves the Device's new address and returns the Profile with it.
-func (c *Connector) moveTo(addr string, p profile.Profile) profile.Profile {
+// scanLogin is what a network search dials with, apart from the address
+// it is looking for.
+type scanLogin struct {
+	user, hostKey string
+	port          int
+	passwordless  bool
+}
+
+func scanLoginOf(p profile.Profile) scanLogin {
+	return scanLogin{p.User, p.HostKey, p.Port, p.Passwordless}
+}
+
+// moveTo saves the new address a search found the Device at and returns the
+// Profile with it. If the Profile's login changed while the search ran, the
+// link it made is not the one the user asked for: nothing is saved and ok is
+// false, so a port the user has since changed is never written back.
+func (c *Connector) moveTo(addr string, made scanLogin) (p profile.Profile, ok bool) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return p
+		return p, false
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return p
+		return p, false
 	}
+	errChanged := errors.New("connector: login changed during the search")
 	saved, err := c.cfg.Store.Update(func(p *profile.Profile) error {
+		if scanLoginOf(*p) != made {
+			return errChanged
+		}
 		p.Address, p.Port = host, port
 		return nil
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errChanged):
+		return p, false
+	case err != nil:
 		log.Printf("connector: saving the new address %s: %v", addr, err)
-		p.Address, p.Port = host, port
-		return p
+		cur, lerr := c.cfg.Store.Load()
+		if lerr != nil || scanLoginOf(cur) != made {
+			return p, false
+		}
+		cur.Address, cur.Port = host, port
+		return cur, true
 	}
-	return saved
+	return saved, true
 }
 
 // login is what a link was made with. A Profile with a different one needs a
