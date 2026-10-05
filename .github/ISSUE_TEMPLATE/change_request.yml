@@ -1,0 +1,66 @@
+name: Change request
+description: Ask for a new feature, a change in behaviour, or a different clean name.
+title: "change: "
+labels: ["change request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution, and give one concrete example. See the [good and bad examples](https://github.com/odmrs/ember/blob/main/CONTRIBUTING.md#a-good-change-request-and-a-bad-one).
+
+        Please wait for agreement here before writing code: changes that add a dependency, reach outside `127.0.0.1` or go against a decision in `docs/adr/` will not be merged.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues, including closed ones, and this is not a duplicate.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Clean names
+        - Library (browse, move, rename, delete)
+        - Upload and download
+        - Pairing and connection
+        - Settings
+        - Translations
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and what gets in the way today.
+      placeholder: I keep series in one folder, and clean names drops the series number, so I cannot tell the reading order from the file list.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Concrete example
+      description: The input, what ember does today, and what you want it to do instead. For clean names, give the exact file name as it is on disk.
+      placeholder: |
+        Input:    Sanderson, Brandon - [Mistborn 01] El imperio final (r1.2).epub
+        Today:    El imperio final - Brandon Sanderson.epub
+        Expected: El imperio final (Mistborn 01) - Brandon Sanderson.epub
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Optional. How you think it could work, and anything you considered and dropped.
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to implement it?
+      description: Only once the change is agreed in this issue.
+      options:
+        - "No"
+        - Yes, once it is agreed
+    validations:
+      required: true

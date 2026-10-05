@@ -1,0 +1,113 @@
+name: Bug report
+description: Something in ember does not work as it should.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. A report with exact versions, steps and log lines usually gets fixed; "it doesn't work" usually does not. See the [good and bad examples](https://github.com/odmrs/ember/blob/main/CONTRIBUTING.md#a-good-bug-report-and-a-bad-one).
+
+        Security problems go to [private vulnerability reporting](https://github.com/odmrs/ember/security/advisories/new), not here.
+
+        You may replace IP addresses and book names with placeholders (say so if you do). Never paste the contents of ember's config folder: it holds your private key.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues, including closed ones, and this is not a duplicate.
+          required: true
+        - label: This report is about one problem.
+          required: true
+  - type: input
+    id: kindle-model
+    attributes:
+      label: Kindle model
+      placeholder: Kindle Paperwhite 5 (11th gen)
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Kindle firmware version
+      description: On the Kindle, Settings → Device Options → Device Info.
+      placeholder: "5.16.21"
+    validations:
+      required: true
+  - type: input
+    id: koreader-version
+    attributes:
+      label: KOReader version
+      description: KOReader → Help → About.
+      placeholder: v2025.08
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How ember reaches the Kindle
+      options:
+        - KOReader SSH server
+        - usbnetlite
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: computer-os
+    attributes:
+      label: Computer OS and version
+      placeholder: macOS 15.3 / Ubuntu 24.04 / Windows 11 23H2
+    validations:
+      required: true
+  - type: input
+    id: ember-version
+    attributes:
+      label: ember version or commit
+      description: The dashboard footer shows the version. If you built from source, `git rev-parse --short HEAD` gives the commit.
+      placeholder: 0.1.0-dev at 2870047
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Start from launching ember if you can. Include file sizes and formats when files are involved.
+      placeholder: |
+        1. Start ember; it reconnects to the paired Kindle.
+        2. Open /mnt/us/documents/Manuals.
+        3. Upload a 300 MB PDF with + Upload.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: The upload finishes and the book appears in the list.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Attach a screenshot here if anything looks wrong on screen.
+      placeholder: Progress stops at 99%. After about two minutes the queue shows an error. A 40 MB PDF uploads fine.
+    validations:
+      required: true
+  - type: textarea
+    id: log-strip
+    attributes:
+      label: LOG strip text
+      description: The line in the LOG box at the bottom of the dashboard, copied as text.
+      render: text
+  - type: textarea
+    id: terminal
+    attributes:
+      label: Terminal output
+      description: What ember printed in the terminal, from start to the problem.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Other things you tried, whether it worked in an earlier version, your network setup, and how the Kindle is connected if you picked Other above.
