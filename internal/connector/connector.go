@@ -1,0 +1,434 @@
+// Package connector keeps ember linked to the paired Device while at least one
+// dashboard tab (a Session) is open: it dials every two seconds until the
+// Device answers, finds it again on the local network if its address
+// changed, and goes back to searching when the link drops.
+package connector
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/odmrs/ember/internal/device"
+	"github.com/odmrs/ember/internal/pairing"
+	"github.com/odmrs/ember/internal/profile"
+	"golang.org/x/crypto/ssh"
+)
+
+// Timings of the loop. RetryInterval is measured from the start of one
+// attempt to the start of the next, without backoff.
+const (
+	RetryInterval = 2 * time.Second
+	// KeepaliveInterval is how often a linked Device must answer a ping, and
+	// how long it gets to answer.
+	KeepaliveInterval = 5 * time.Second
+	dialTimeout       = 5 * time.Second
+	scanTimeout       = 30 * time.Second
+)
+
+// ErrNotLinked is returned by Device while no link is up.
+var ErrNotLinked = errors.New("connector: device not linked")
+
+// Phase is what the Connector is doing.
+type Phase string
+
+const (
+	PhaseIdle      Phase = "idle"      // no Session open
+	PhaseUnpaired  Phase = "unpaired"  // nothing to connect to yet
+	PhaseSearching Phase = "searching" // dialing every RetryInterval
+	PhaseLinked    Phase = "linked"
+)
+
+// Failure is why the last attempt at the saved address failed.
+type Failure string
+
+const (
+	FailUnreachable     Failure = "unreachable"
+	FailPortClosed      Failure = "port_closed"
+	FailHostKeyMismatch Failure = "host_key_mismatch"
+	FailAuthRejected    Failure = "auth_rejected"
+)
+
+// State is a snapshot for the dashboard.
+type State struct {
+	Phase Phase `json:"phase"`
+	// Attempt counts dials of the saved address since the last link.
+	Attempt int `json:"attempt,omitempty"`
+	// Address is the "host:port" being tried, or the linked one.
+	Address string  `json:"address,omitempty"`
+	Failure Failure `json:"failure,omitempty"`
+	// Scanning is set while the local network is searched for the Device.
+	Scanning bool `json:"scanning,omitempty"`
+}
+
+// Config wires a Connector. Only Store is required.
+type Config struct {
+	Store *profile.Store
+	// Dial opens a link; device.Dial when nil.
+	Dial func(ctx context.Context, cfg device.Config) (*device.Device, error)
+	// Targets lists the "host:port" addresses a network search probes;
+	// pairing.LocalTargets when nil.
+	Targets func(ports []int) ([]string, error)
+	// After is the clock the loop waits on; time.After when nil.
+	After func(time.Duration) <-chan time.Time
+}
+
+// Connector is safe for concurrent use.
+type Connector struct {
+	cfg Config
+
+	mu     sync.Mutex
+	state  State
+	dev    *device.Device
+	subs   map[chan State]struct{}
+	cancel context.CancelFunc // stops the running loop
+	done   chan struct{}      // closed when the last loop started has exited
+	closed bool
+}
+
+// New returns an idle Connector. Nothing is dialed until a Session opens.
+func New(cfg Config) *Connector {
+	if cfg.Dial == nil {
+		cfg.Dial = device.Dial
+	}
+	if cfg.Targets == nil {
+		cfg.Targets = pairing.LocalTargets
+	}
+	if cfg.After == nil {
+		cfg.After = time.After
+	}
+	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}}
+}
+
+// State returns the current state.
+func (c *Connector) State() State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state
+}
+
+// Device returns the linked Device, or ErrNotLinked. The Connector owns it:
+// callers must not close it, and their calls fail with an error if the link
+// drops underneath them.
+func (c *Connector) Device() (*device.Device, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dev == nil {
+		return nil, ErrNotLinked
+	}
+	return c.dev, nil
+}
+
+// Session registers an open dashboard tab. The channel delivers the current
+// state at once and then every change; a reader that falls behind gets only
+// the latest one. The loop runs while at least one Session is open. Calling
+// end closes the Session; the channel is closed if the Connector is.
+func (c *Connector) Session() (states <-chan State, end func()) {
+	ch := make(chan State, 1)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		close(ch)
+		return ch, func() {}
+	}
+	ch <- c.state
+	c.subs[ch] = struct{}{}
+	if len(c.subs) == 1 {
+		c.start()
+	}
+	var once sync.Once
+	return ch, func() { once.Do(func() { c.leave(ch) }) }
+}
+
+func (c *Connector) leave(ch chan State) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.subs[ch]; !ok {
+		return
+	}
+	delete(c.subs, ch)
+	if len(c.subs) == 0 {
+		c.cancel()
+	}
+}
+
+// start launches the loop; c.mu must be held. A loop still winding down from
+// the previous Session finishes first, so two loops never overlap.
+func (c *Connector) start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	prev, done := c.done, make(chan struct{})
+	c.cancel, c.done = cancel, done
+	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
+		c.run(ctx)
+		c.publish(State{Phase: PhaseIdle}, nil)
+	}()
+}
+
+// Close stops the loop, closes the link and ends every Session.
+func (c *Connector) Close() {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
+	if c.cancel != nil {
+		c.cancel()
+	}
+	for ch := range c.subs {
+		close(ch)
+	}
+	c.subs = map[chan State]struct{}{}
+	done := c.done
+	c.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+// publish sets the state and the linked Device together and tells every
+// Session about a change.
+func (c *Connector) publish(s State, dev *device.Device) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dev = dev
+	if s == c.state {
+		return
+	}
+	c.state = s
+	for ch := range c.subs {
+		select {
+		case <-ch:
+		default:
+		}
+		ch <- s
+	}
+}
+
+// found is a network search's result: a linked Device at a new address, or
+// nothing.
+type found struct {
+	dev  *device.Device
+	addr string
+}
+
+// search is a network search in progress.
+type search struct {
+	results chan found
+	cancel  context.CancelFunc
+}
+
+func (c *Connector) startSearch(ctx context.Context, cfg device.Config, port int) *search {
+	ctx, cancel := context.WithTimeout(ctx, scanTimeout)
+	s := &search{results: make(chan found, 1), cancel: cancel}
+	go c.scan(ctx, cfg, port, s.results)
+	return s
+}
+
+// abandon stops the search and closes whatever it may still find.
+func (s *search) abandon() {
+	s.cancel()
+	go func() {
+		if f := <-s.results; f.dev != nil {
+			f.dev.Close()
+		}
+	}()
+}
+
+func (c *Connector) run(ctx context.Context) {
+	var scan *search // non-nil while the network is being searched
+	stopScan := func() {
+		if scan != nil {
+			scan.abandon()
+			scan = nil
+		}
+	}
+	defer stopScan()
+	results := func() <-chan found {
+		if scan == nil {
+			return nil
+		}
+		return scan.results
+	}
+
+	attempt := 0
+	var failure Failure
+	var profileErr string
+	for ctx.Err() == nil {
+		// Measured from the start of the attempt; a link that drops at once
+		// is retried on the same cadence, never in a tight loop.
+		next := c.cfg.After(RetryInterval)
+		p, cfg, err := c.target()
+		if err != nil {
+			if !errors.Is(err, profile.ErrNotPaired) && err.Error() != profileErr {
+				log.Printf("connector: %v", err)
+			}
+			profileErr = err.Error()
+			stopScan()
+			attempt, failure = 0, ""
+			c.publish(State{Phase: PhaseUnpaired}, nil)
+		} else {
+			profileErr = ""
+			attempt++
+			c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure, Scanning: scan != nil}, nil)
+			d, err := c.cfg.Dial(ctx, cfg)
+			switch {
+			case err == nil:
+				stopScan()
+				c.link(ctx, d, cfg.Addr)
+				attempt, failure = 0, ""
+			case ctx.Err() != nil:
+				return
+			default:
+				failure = classify(err)
+				// A refused login means the Device is right there; searching
+				// elsewhere cannot help.
+				if scan == nil && failure != FailAuthRejected {
+					scan = c.startSearch(ctx, cfg, p.Port)
+				}
+				c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure, Scanning: scan != nil}, nil)
+			}
+		}
+
+	wait:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-next:
+				break wait
+			case f := <-results():
+				scan.cancel()
+				scan = nil
+				if f.dev == nil {
+					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
+					continue
+				}
+				c.moveTo(f.addr)
+				c.link(ctx, f.dev, f.addr)
+				attempt, failure = 0, ""
+			}
+		}
+	}
+}
+
+// target reads the Profile on every attempt, so a new pairing, address or
+// passwordless setting applies without a restart.
+func (c *Connector) target() (profile.Profile, device.Config, error) {
+	p, err := c.cfg.Store.Load()
+	if err != nil {
+		return p, device.Config{}, err
+	}
+	hostKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(p.HostKey))
+	if err != nil {
+		return p, device.Config{}, err
+	}
+	cfg := device.Config{Addr: p.HostPort(), User: p.User, HostKey: hostKey, Timeout: dialTimeout}
+	if !p.Passwordless {
+		if cfg.Signer, err = c.cfg.Store.Signer(); err != nil {
+			return p, device.Config{}, err
+		}
+	}
+	return p, cfg, nil
+}
+
+// scan looks for the Device on the local network: every host answering like
+// KOReader's SSH server is dialed with the pinned host key, so any other
+// device is dropped at the handshake, before ember logs in.
+func (c *Connector) scan(ctx context.Context, cfg device.Config, port int, out chan<- found) {
+	targets, err := c.cfg.Targets([]int{port})
+	if err != nil {
+		log.Printf("connector: listing local networks: %v", err)
+		out <- found{}
+		return
+	}
+	for _, h := range pairing.FindDropbear(ctx, targets) {
+		at := cfg
+		at.Addr = h.Addr
+		if d, err := c.cfg.Dial(ctx, at); err == nil {
+			out <- found{dev: d, addr: h.Addr}
+			return
+		}
+	}
+	out <- found{}
+}
+
+// moveTo saves the Device's new address.
+func (c *Connector) moveTo(addr string) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return
+	}
+	p, err := c.cfg.Store.Load()
+	if err == nil {
+		p.Address, p.Port = host, port
+		err = c.cfg.Store.Save(p)
+	}
+	if err != nil {
+		log.Printf("connector: saving the new address %s: %v", addr, err)
+	}
+}
+
+// link holds the link until it drops or ctx ends, then closes it. A Device
+// that leaves Wi-Fi does not close the TCP connection, so a ping every
+// KeepaliveInterval must be answered within the next one.
+func (c *Connector) link(ctx context.Context, d *device.Device, addr string) {
+	c.publish(State{Phase: PhaseLinked, Address: addr}, d)
+	defer d.Close()
+	defer c.publish(State{Phase: PhaseSearching, Address: addr}, nil)
+
+	gone := make(chan struct{})
+	go func() {
+		d.Wait()
+		close(gone)
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-gone:
+			return
+		case <-c.cfg.After(KeepaliveInterval):
+			replied := make(chan error, 1)
+			go func() { replied <- d.Ping() }()
+			select {
+			case err := <-replied:
+				if err != nil {
+					return
+				}
+			case <-gone:
+				return
+			case <-ctx.Done():
+				return
+			case <-c.cfg.After(KeepaliveInterval):
+				return
+			}
+		}
+	}
+}
+
+func classify(err error) Failure {
+	var mismatch *device.HostKeyMismatchError
+	switch {
+	case errors.As(err, &mismatch):
+		return FailHostKeyMismatch
+	case errors.Is(err, device.ErrAuthRejected):
+		return FailAuthRejected
+	case refused(err):
+		return FailPortClosed
+	default:
+		return FailUnreachable
+	}
+}
