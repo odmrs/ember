@@ -350,6 +350,69 @@ func (d *Device) Exec(cmd string) ([]byte, error) {
 	return s.CombinedOutput(cmd)
 }
 
+// Process is a command running on the Device.
+type Process struct {
+	s     *ssh.Session
+	stdin io.WriteCloser
+	done  chan struct{}
+	err   error
+}
+
+// Start runs cmd on the Device and returns while it runs. Like Exec, cmd
+// goes through the Device's shell and must be a fixed string. Its output is
+// discarded. The command lives in its own channel of the connection: it sees
+// end of input when CloseStdin is called or the connection drops.
+func (d *Device) Start(cmd string) (*Process, error) {
+	s, err := d.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	stdin, err := s.StdinPipe()
+	if err == nil {
+		err = s.Start(cmd)
+	}
+	if err != nil {
+		s.Close()
+		return nil, err
+	}
+	p := &Process{s: s, stdin: stdin, done: make(chan struct{})}
+	go func() {
+		p.err = s.Wait()
+		close(p.done)
+	}()
+	return p, nil
+}
+
+// CloseStdin sends end of input to the command.
+func (p *Process) CloseStdin() error {
+	return p.stdin.Close()
+}
+
+// Done is closed when the command has ended.
+func (p *Process) Done() <-chan struct{} {
+	return p.done
+}
+
+// ExitStatus is the command's exit status once Done is closed. ok is false
+// when the command ended without one, as when the connection dropped.
+func (p *Process) ExitStatus() (status int, ok bool) {
+	var exit *ssh.ExitError
+	switch {
+	case p.err == nil:
+		return 0, true
+	case errors.As(p.err, &exit):
+		return exit.ExitStatus(), true
+	default:
+		return -1, false
+	}
+}
+
+// Close closes the command's channel; the Device's shell decides what
+// happens to a command still running.
+func (p *Process) Close() error {
+	return p.s.Close()
+}
+
 func parentDir(p string) string {
 	i := strings.LastIndex(strings.TrimSuffix(p, "/"), "/")
 	if i <= 0 {
