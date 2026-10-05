@@ -1,4 +1,4 @@
-package pairing
+package koreader
 
 import "testing"
 
@@ -42,5 +42,17 @@ func TestLuaStringToleratesGarbage(t *testing.T) {
 	}
 	if got, _ := luaString(`["home_dir"]="a\q\999b"`, "home_dir"); got != `aq999b` {
 		t.Errorf("bad escapes: got %q", got)
+	}
+}
+
+func TestParseSettings(t *testing.T) {
+	src := []byte("return {\n    [\"document_metadata_folder\"] = \"hash\",\n    [\"lastfile\"] = \"/mnt/us/documents/Dune.epub\",\n}\n")
+	got := ParseSettings(src)
+	want := Settings{MetadataMode: MetadataHash, LastFile: "/mnt/us/documents/Dune.epub"}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if got := ParseSettings([]byte("\x00garbage{{")); got != (Settings{}) {
+		t.Fatalf("garbage: got %+v", got)
 	}
 }
