@@ -16,6 +16,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -218,6 +220,13 @@ func (d *Device) StopListening() {
 	}
 }
 
+// Listening reports whether the SSH server accepts new connections.
+func (d *Device) Listening() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.ln != nil
+}
+
 // Start brings the SSH server back on the same address after Stop.
 func (d *Device) Start() {
 	d.listen(d.Addr())
@@ -417,12 +426,41 @@ func (d *Device) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 const lipcPrefix = "lipc-set-prop com.lab126.powerd preventScreenSaver "
 
+// stopServer is KOReader's own SSH stop, run detached: TERM the listener
+// whose pid KOReader keeps, plug the two firewall holes for the port, and
+// drop the pid file once the listener is gone.
+var stopServer = regexp.MustCompile(`^nohup sh -c 'sleep 1; pid=\$\(cat /tmp/dropbear_koreader\.pid\); kill -TERM "\$pid"; sleep 1; ` +
+	`iptables -D INPUT -p tcp --dport (\d+) -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT; ` +
+	`iptables -D OUTPUT -p tcp --sport (\d+) -m conntrack --ctstate ESTABLISHED -j ACCEPT; ` +
+	`\[ -d "/proc/\$pid" \] \|\| rm -f /tmp/dropbear_koreader\.pid' >/dev/null 2>&1 &$`)
+
+// stopsThisServer reports whether cmd is the stop command for the port the
+// fake listens on.
+func (d *Device) stopsThisServer(cmd string) bool {
+	m := stopServer.FindStringSubmatch(cmd)
+	if m == nil || m[1] != m[2] {
+		return false
+	}
+	_, port, err := net.SplitHostPort(d.Addr())
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(m[1])
+	return err == nil && strconv.Itoa(n) == port
+}
+
 // run plays the part of the Device's shell for the commands ember sends: a
 // "; "-separated list of steps, each of which may end in "|| exit $?". A
 // step is "cat >/dev/null", which reads stdin until it closes, or
-// lipc-set-prop setting powerd's preventScreenSaver. Any other command reads
-// stdin to the end and succeeds.
+// lipc-set-prop setting powerd's preventScreenSaver. KOReader's SSH stop for
+// the fake's own port closes the listener and leaves open connections, as
+// dropbear does. Any other command reads stdin to the end and succeeds.
 func (d *Device) run(cmd string, stdin io.Reader) int {
+	if d.stopsThisServer(cmd) {
+		d.StopListening()
+		_, _ = io.Copy(io.Discard, stdin)
+		return 0
+	}
 	steps := strings.Split(cmd, "; ")
 	for _, step := range steps {
 		step, _ = strings.CutSuffix(step, " || exit $?")

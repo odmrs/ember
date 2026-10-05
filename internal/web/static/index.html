@@ -6,6 +6,7 @@
 <title>ember</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
+<script src="theme.js"></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -15,7 +16,10 @@
     <span class="tagline" data-i18n="tagline"></span>
     <nav class="right">
       <span id="link"><span class="dot"></span><span id="link-text"></span></span>
+      <button type="button" class="bracket" id="disconnect-btn" data-action="disconnect" hidden data-i18n="disconnect"></button>
+      <button type="button" class="bracket" id="search-btn" data-action="retry-connect" hidden data-i18n="searchAgain"></button>
       <button type="button" class="bracket" id="settings-btn" data-action="settings" disabled data-i18n="settings"></button>
+      <button type="button" class="bracket" id="theme-btn" data-action="theme"></button>
       <span class="lang">[<button type="button" data-lang="en">EN</button>|<button type="button" data-lang="pt">PT</button>]</span>
     </nav>
   </header>
@@ -231,8 +235,9 @@
     <form method="dialog">
       <div class="head"><span class="label" id="dialog-title"></span></div>
       <div class="dialog-body" id="dialog-body"></div>
-      <div class="actions">
+      <div class="actions" id="dialog-actions">
         <button type="submit" value="cancel" class="secondary" data-i18n="cancel"></button>
+        <button type="submit" value="alt" class="secondary" id="dialog-alt" hidden></button>
         <button type="submit" value="ok" class="danger" id="dialog-ok"></button>
       </div>
     </form>

@@ -53,6 +53,7 @@ async function setLang(next) {
   document.documentElement.lang = LANGS[lang];
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const b of document.querySelectorAll("[data-lang]")) b.setAttribute("aria-pressed", b.dataset.lang === lang);
+  renderTheme();
   render();
   for (const it of uploads.items) fillRow(it);
 }
@@ -67,9 +68,10 @@ const pairing = { view: "start", candidates: [], error: null, locked: false, add
 // is only known once a Device is paired.
 const DEFAULT_ROOT = "/mnt/us/documents";
 // conn mirrors the Connector, pushed by the server over /api/events.
-const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" };
+const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", reason: "", scanning: false, keepAwake: "" };
+const CONN_RESET = { attempt: 0, address: "", failure: "", reason: "", scanning: false, keepAwake: "" };
 const ui = { settings: false };
-const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", waiting: "state.waiting", linked: "state.linked", offline: "state.offline" };
+const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", waiting: "state.waiting", disconnected: "state.disconnected", linked: "state.linked", offline: "state.offline" };
 const FAILURES = {
   unreachable: "conn.unreachable",
   port_closed: "conn.portClosed",
@@ -111,6 +113,7 @@ const ERRORS = {
   bad_port: "err.badPort",
   bad_user: "err.badUser",
   confirmation_required: "err.confirmationRequired",
+  stop_failed: "err.stopFailed",
 };
 
 // errorText is an API error as the user reads it; a refused name says why.
@@ -154,7 +157,7 @@ function linkState() {
   if (pairing.view === "scanning") return "searching";
   if (status.state === "unpaired") return "unpaired";
   if (!conn.online) return "offline";
-  if (conn.phase === "waiting") return "waiting";
+  if (conn.phase === "waiting") return conn.reason === "disconnected" ? "disconnected" : "waiting";
   return conn.phase === "linked" ? "linked" : "searching";
 }
 
@@ -171,6 +174,8 @@ function render() {
   const settings = ui.settings && paired && !active;
   const connecting = !active && !settings && conn.phase !== "linked";
   $("settings-btn").disabled = !paired || active;
+  $("disconnect-btn").hidden = !paired || active || !conn.online || conn.phase !== "linked";
+  $("search-btn").hidden = !paired || active || !conn.online || conn.phase !== "waiting";
   $("settings-btn").setAttribute("aria-pressed", settings);
   $("pwd-banner").hidden = !status.device?.passwordless;
   $("pair").hidden = !active;
@@ -201,9 +206,11 @@ function renderConnecting() {
   const d = status.device;
   const address = conn.address || (d ? `${d.address}:${d.port}` : "—");
   const waiting = conn.phase === "waiting";
-  $("conn-title").textContent = t(waiting ? "conn.notFound" : "conn.title");
+  const byUser = waiting && conn.reason === "disconnected";
+  $("conn-title").textContent = t(byUser ? "conn.disconnected" : waiting ? "conn.notFound" : "conn.title");
   $("conn-attempt").textContent = `#${conn.attempt}`;
-  $("conn-line").textContent = `${address} · ${t(waiting ? "conn.stopped" : "conn.retry")}`;
+  $("conn-attempt").hidden = byUser;
+  $("conn-line").textContent = `${address} · ${t(byUser ? "conn.byYou" : waiting ? "conn.stopped" : "conn.retry")}`;
   $("conn-retry").hidden = !waiting;
   $("conn-scan").hidden = !conn.scanning;
 
@@ -763,12 +770,22 @@ function remove(paths) {
 let asking = Promise.resolve();
 
 function ask(opts) {
+  return dialogTurn(opts).then((v) => v === "ok");
+}
+
+// choose is ask with a second way to confirm; it resolves to "ok", "alt" or
+// "cancel".
+function choose(opts) {
+  return dialogTurn(opts).then((v) => v || "cancel");
+}
+
+function dialogTurn(opts) {
   const turn = asking.then(() => showDialog(opts));
   asking = turn.catch(() => {});
   return turn;
 }
 
-function showDialog({ title, body, warn, ok, cancel = t("cancel"), okClass = "danger" }) {
+function showDialog({ title, body, warn, ok, alt, cancel = t("cancel"), okClass = "danger" }) {
   const d = $("dialog");
   $("dialog-title").textContent = title;
   const content = body.map((b) => typeof b === "string" ? el("p", {}, b) : b);
@@ -776,11 +793,50 @@ function showDialog({ title, body, warn, ok, cancel = t("cancel"), okClass = "da
   $("dialog-body").replaceChildren(...content);
   $("dialog-ok").textContent = ok;
   $("dialog-ok").className = okClass;
+  $("dialog-alt").hidden = !alt;
+  $("dialog-alt").textContent = alt ?? "";
+  $("dialog-actions").classList.toggle("choices", !!alt);
   d.querySelector("[value=cancel]").textContent = cancel;
   d.returnValue = "";
   d.showModal();
   d.querySelector("[value=cancel]").focus();
-  return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }));
+  return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue), { once: true }));
+}
+
+// disconnect closes the link on the user's word; the Connector then waits
+// for Search again. Turning the Kindle's SSH server off as well is the
+// recommended answer: a server left on accepts logins from the network.
+function disconnect() {
+  return exclusive(async () => {
+    const how = await choose({
+      title: t("disc.title"),
+      body: [t("disc.body"), t("disc.stopAbout")],
+      warn: uploadsActive() ? t("dlg.uploadsForget") : "",
+      ok: t("disc.stop"),
+      okClass: "primary",
+      alt: t("disc.only"),
+    });
+    if (how === "cancel") return;
+    const stopServer = how === "ok";
+    stopUploads();
+    try {
+      await api("api/connect/disconnect", { stopServer });
+      log(t(stopServer ? "log.disconnectedStopped" : "log.disconnected"));
+    } catch (err) {
+      log(errorText(err), err.message);
+    }
+  });
+}
+
+function renderTheme() {
+  const b = $("theme-btn");
+  b.textContent = t(`theme.${themeMode}`);
+  b.title = t(`theme.${themeMode}Hint`);
+}
+
+function cycleTheme() {
+  nextThemeMode();
+  renderTheme();
 }
 
 function openSettings() {
@@ -1082,6 +1138,8 @@ document.addEventListener("click", (e) => {
     case "settings": return ui.settings ? closeSettings() : openSettings();
     case "settings-open": return openSettings();
     case "retry-connect": return api("api/connect/retry", {}).catch((err) => log(errorText(err)));
+    case "disconnect": return disconnect();
+    case "theme": return cycleTheme();
     case "settings-close": return closeSettings();
     case "passwordless": return togglePasswordless();
     case "forget": return forget();
@@ -1492,10 +1550,10 @@ function listen() {
   let stale = false;
   events.addEventListener("state", (e) => {
     const was = conn.phase;
-    Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" }, JSON.parse(e.data), { online: true });
+    Object.assign(conn, CONN_RESET, JSON.parse(e.data), { online: true });
     if (was !== "linked" && conn.phase === "linked") log(`${t("log.linked")} ${conn.address}`);
     if (conn.phase === "linked" && (was !== "linked" || stale)) refreshLibrary();
-    if (was === "linked" && conn.phase !== "linked") log(t("log.lost"));
+    if (was === "linked" && conn.phase !== "linked" && conn.reason !== "disconnected") log(t("log.lost"));
     stale = false;
     render();
   });
