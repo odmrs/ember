@@ -75,6 +75,20 @@ func TestEventsStreamTheConnectorState(t *testing.T) {
 	}
 }
 
+func TestRetryStartsANewRound(t *testing.T) {
+	store, err := profile.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := connector.New(connector.Config{Store: store, Targets: func([]int) ([]string, error) { return nil, nil }})
+	t.Cleanup(conn.Close)
+	flow, _ := newFlow(t)
+	h := New(self, "test", flow, conn)
+	if rec := post(t, h, "/api/connect/retry", "{}"); rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestEventsRejectCrossSite(t *testing.T) {
 	rec := do(t, "GET", "/api/events", self, "", "Sec-Fetch-Site", "cross-site")
 	if rec.Code != http.StatusForbidden {

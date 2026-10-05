@@ -118,9 +118,10 @@
 
   <section class="box connect" id="connect" hidden>
     <div class="connect-body">
-      <div class="label" data-i18n="conn.title"></div>
+      <div class="label" id="conn-title"></div>
       <div class="n" id="conn-attempt">#0</div>
       <div class="dim" id="conn-line"></div>
+      <div class="actions conn-actions"><button type="button" class="primary" id="conn-retry" data-action="retry-connect" data-i18n="conn.retryNow" hidden></button></div>
       <div class="conn-fail" id="conn-fail" role="status" hidden>
         <div class="label" id="conn-warning" data-i18n="conn.securityWarning" hidden></div>
         <p id="conn-fail-text"></p>

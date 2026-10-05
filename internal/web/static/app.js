@@ -69,7 +69,7 @@ const DEFAULT_ROOT = "/mnt/us/documents";
 // conn mirrors the Connector, pushed by the server over /api/events.
 const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" };
 const ui = { settings: false };
-const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", linked: "state.linked", offline: "state.offline" };
+const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", waiting: "state.waiting", linked: "state.linked", offline: "state.offline" };
 const FAILURES = {
   unreachable: "conn.unreachable",
   port_closed: "conn.portClosed",
@@ -154,6 +154,7 @@ function linkState() {
   if (pairing.view === "scanning") return "searching";
   if (status.state === "unpaired") return "unpaired";
   if (!conn.online) return "offline";
+  if (conn.phase === "waiting") return "waiting";
   return conn.phase === "linked" ? "linked" : "searching";
 }
 
@@ -199,8 +200,11 @@ function render() {
 function renderConnecting() {
   const d = status.device;
   const address = conn.address || (d ? `${d.address}:${d.port}` : "—");
+  const waiting = conn.phase === "waiting";
+  $("conn-title").textContent = t(waiting ? "conn.notFound" : "conn.title");
   $("conn-attempt").textContent = `#${conn.attempt}`;
-  $("conn-line").textContent = `${address} · ${t("conn.retry")}`;
+  $("conn-line").textContent = `${address} · ${t(waiting ? "conn.stopped" : "conn.retry")}`;
+  $("conn-retry").hidden = !waiting;
   $("conn-scan").hidden = !conn.scanning;
 
   const fail = $("conn-fail");
@@ -1077,6 +1081,7 @@ document.addEventListener("click", (e) => {
     case "clear-queue": return clearQueue();
     case "settings": return ui.settings ? closeSettings() : openSettings();
     case "settings-open": return openSettings();
+    case "retry-connect": return api("api/connect/retry", {}).catch((err) => log(errorText(err)));
     case "settings-close": return closeSettings();
     case "passwordless": return togglePasswordless();
     case "forget": return forget();

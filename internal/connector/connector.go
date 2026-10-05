@@ -23,6 +23,9 @@ import (
 // attempt to the start of the next, without backoff.
 const (
 	RetryInterval = 2 * time.Second
+	// AttemptsPerRound is how many attempts a round makes before the
+	// Connector stops and waits for Retry.
+	AttemptsPerRound = 5
 	// KeepaliveInterval is how often a linked Device must answer a ping, and
 	// how long it gets to answer.
 	KeepaliveInterval = 5 * time.Second
@@ -41,6 +44,7 @@ const (
 	PhaseIdle      Phase = "idle"      // no Session open
 	PhaseUnpaired  Phase = "unpaired"  // nothing to connect to yet
 	PhaseSearching Phase = "searching" // dialing every RetryInterval
+	PhaseWaiting   Phase = "waiting"   // a round of attempts failed; waiting for Retry
 	PhaseLinked    Phase = "linked"
 )
 
@@ -78,6 +82,8 @@ type Config struct {
 	Targets func(ports []int) ([]string, error)
 	// After is the clock the loop waits on; time.After when nil.
 	After func(time.Duration) <-chan time.Time
+	// Attempts is the number of attempts per round; AttemptsPerRound when 0.
+	Attempts int
 	// Listening reports whether the Device still accepts new connections on
 	// addr; a TCP connect when nil.
 	Listening func(ctx context.Context, addr string) bool
@@ -100,6 +106,7 @@ type Connector struct {
 	onLink      []func(*device.Device)
 
 	reload chan struct{}
+	retry  chan struct{}
 }
 
 // New returns an idle Connector. Nothing is dialed until a Session opens.
@@ -113,10 +120,13 @@ func New(cfg Config) *Connector {
 	if cfg.After == nil {
 		cfg.After = time.After
 	}
+	if cfg.Attempts == 0 {
+		cfg.Attempts = AttemptsPerRound
+	}
 	if cfg.Listening == nil {
 		cfg.Listening = listening
 	}
-	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1)}
+	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1), retry: make(chan struct{}, 1)}
 }
 
 // State returns the current state.
@@ -216,6 +226,14 @@ func (c *Connector) Close() {
 func (c *Connector) Reload() {
 	select {
 	case c.reload <- struct{}{}:
+	default:
+	}
+}
+
+// Retry starts a new round of attempts after one ended in PhaseWaiting.
+func (c *Connector) Retry() {
+	select {
+	case c.retry <- struct{}{}:
 	default:
 	}
 }
@@ -361,24 +379,39 @@ func (c *Connector) run(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-next:
+				// A round is a few attempts, not an endless loop: the user
+				// may simply not have started the SSH server yet, and asks
+				// for the next round once they have. A network search
+				// already under way can still finish and link.
+				if attempt >= c.cfg.Attempts {
+					next = nil
+					c.publish(State{Phase: PhaseWaiting, Attempt: attempt, Address: cfg.Addr, Failure: failure, Scanning: scan != nil}, nil)
+					continue
+				}
+				break wait
+			case <-c.retry:
+				attempt, lastScan, failure = 0, 0, ""
 				break wait
 			case <-c.reload:
 				// The search dials with the old login; the next attempt
 				// starts one with the new.
 				stopScan()
+				if next == nil {
+					attempt, lastScan, failure = 0, 0, ""
+				}
 				break wait
 			case f := <-results():
 				made := scan.login
 				scan.cancel()
 				scan = nil
 				if f.dev == nil {
-					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
+					c.publish(State{Phase: roundPhase(next), Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
 					continue
 				}
 				now, ok := c.moveTo(f.addr, made)
 				if !ok {
 					f.dev.Close()
-					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
+					c.publish(State{Phase: roundPhase(next), Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
 					continue
 				}
 				c.link(ctx, f.dev, f.addr, now)
@@ -386,6 +419,15 @@ func (c *Connector) run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// roundPhase is the phase to report between attempts: waiting once the round
+// is over (no next attempt scheduled), searching otherwise.
+func roundPhase(next <-chan time.Time) Phase {
+	if next == nil {
+		return PhaseWaiting
+	}
+	return PhaseSearching
 }
 
 // target reads the Profile on every attempt, so a new pairing, address or
