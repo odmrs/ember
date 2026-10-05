@@ -44,9 +44,15 @@ const (
 	PhaseIdle      Phase = "idle"      // no Session open
 	PhaseUnpaired  Phase = "unpaired"  // nothing to connect to yet
 	PhaseSearching Phase = "searching" // dialing every RetryInterval
-	PhaseWaiting   Phase = "waiting"   // a round of attempts failed; waiting for Retry
+	PhaseWaiting   Phase = "waiting"   // a round of attempts failed, or the user disconnected; waiting for Retry
 	PhaseLinked    Phase = "linked"
 )
+
+// Reason says why the Connector is waiting when no attempt failed.
+type Reason string
+
+// ReasonDisconnected means the user closed the link with Disconnect.
+const ReasonDisconnected Reason = "disconnected"
 
 // Failure is why the last attempt at the saved address failed.
 type Failure string
@@ -66,6 +72,7 @@ type State struct {
 	// Address is the "host:port" being tried, or the linked one.
 	Address string  `json:"address,omitempty"`
 	Failure Failure `json:"failure,omitempty"`
+	Reason  Reason  `json:"reason,omitempty"`
 	// Scanning is set while the local network is searched for the Device.
 	Scanning bool `json:"scanning,omitempty"`
 	// KeepAwake is set while linked.
@@ -104,9 +111,21 @@ type Connector struct {
 	// it is not tried again until keep-awake is switched off.
 	awakeFailed bool
 	onLink      []func(*device.Device)
+	// disconnected is set by Disconnect and cleared by Retry; while it is
+	// set no attempt is made, across Sessions too.
+	disconnected bool
+	// linkEnded is closed when the link being held has closed.
+	linkEnded <-chan struct{}
 
 	reload chan struct{}
 	retry  chan struct{}
+	hangup chan hangup
+}
+
+// hangup asks the goroutine holding the link to close it.
+type hangup struct {
+	stopServer bool
+	result     chan error
 }
 
 // New returns an idle Connector. Nothing is dialed until a Session opens.
@@ -126,7 +145,7 @@ func New(cfg Config) *Connector {
 	if cfg.Listening == nil {
 		cfg.Listening = listening
 	}
-	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1), retry: make(chan struct{}, 1)}
+	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1), retry: make(chan struct{}, 1), hangup: make(chan hangup)}
 }
 
 // State returns the current state.
@@ -230,12 +249,39 @@ func (c *Connector) Reload() {
 	}
 }
 
-// Retry starts a new round of attempts after one ended in PhaseWaiting.
+// Retry starts a new round of attempts after one ended in PhaseWaiting, or
+// after Disconnect.
 func (c *Connector) Retry() {
+	c.mu.Lock()
+	c.disconnected = false
+	c.mu.Unlock()
 	select {
 	case c.retry <- struct{}{}:
 	default:
 	}
+}
+
+// Disconnect closes the link at the user's request and leaves the Connector
+// waiting for Retry, without dialing again on its own. Keep-awake is released
+// first. With stopServer set, KOReader's SSH server on the Device is also
+// turned off, the way KOReader's own menu does it; the link is closed even if
+// that fails, and the error says so.
+func (c *Connector) Disconnect(stopServer bool) error {
+	c.mu.Lock()
+	ended := c.linkEnded
+	linked := c.dev != nil
+	c.mu.Unlock()
+	if !linked {
+		return ErrNotLinked
+	}
+	h := hangup{stopServer: stopServer, result: make(chan error, 1)}
+	select {
+	case c.hangup <- h:
+	case <-ended:
+		return ErrNotLinked
+	}
+	<-ended
+	return <-h.result
 }
 
 // OnLink registers f to be called with every new link, right after it is
@@ -334,6 +380,15 @@ func (c *Connector) run(ctx context.Context) {
 	var failure Failure
 	var profileErr string
 	for ctx.Err() == nil {
+		if c.isDisconnected() {
+			stopScan()
+			attempt, lastScan, failure = 0, 0, ""
+			c.publish(State{Phase: PhaseWaiting, Reason: ReasonDisconnected}, nil)
+			if !c.waitAfterDisconnect(ctx) {
+				return
+			}
+			continue
+		}
 		// Measured from the start of the attempt; a link that drops at once
 		// is retried on the same cadence, never in a tight loop.
 		next := c.cfg.After(RetryInterval)
@@ -356,6 +411,9 @@ func (c *Connector) run(ctx context.Context) {
 				stopScan()
 				c.link(ctx, d, cfg.Addr, p)
 				attempt, lastScan, failure = 0, 0, ""
+				if c.isDisconnected() {
+					continue
+				}
 			case ctx.Err() != nil:
 				return
 			default:
@@ -416,6 +474,36 @@ func (c *Connector) run(ctx context.Context) {
 				}
 				c.link(ctx, f.dev, f.addr, now)
 				attempt, lastScan, failure = 0, 0, ""
+				if c.isDisconnected() {
+					break wait
+				}
+			}
+		}
+	}
+}
+
+func (c *Connector) isDisconnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.disconnected
+}
+
+// waitAfterDisconnect blocks until Retry, or until the Kindle is forgotten so
+// that the next Pairing links on its own. A Profile change alone does not
+// end the wait. It returns false when ctx ends.
+func (c *Connector) waitAfterDisconnect(ctx context.Context) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-c.retry:
+			return true
+		case <-c.reload:
+			if _, err := c.cfg.Store.Load(); errors.Is(err, profile.ErrNotPaired) {
+				c.mu.Lock()
+				c.disconnected = false
+				c.mu.Unlock()
+				return true
 			}
 		}
 	}
@@ -538,6 +626,10 @@ func loginOf(p profile.Profile) login {
 func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p profile.Profile) {
 	made := loginOf(p)
 	k := &keeper{c: c, d: d}
+	ended := make(chan struct{})
+	c.mu.Lock()
+	c.linkEnded = ended
+	c.mu.Unlock()
 	c.publish(State{Phase: PhaseLinked, Address: addr, KeepAwake: k.set(p.KeepAwake)}, d)
 	c.mu.Lock()
 	hooks := c.onLink
@@ -545,9 +637,13 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 	for _, f := range hooks {
 		f(d)
 	}
-	defer d.Close()
-	defer c.publish(State{Phase: PhaseSearching, Address: addr}, nil)
-	defer k.stop()
+	after := State{Phase: PhaseSearching, Address: addr}
+	defer func() {
+		k.stop()
+		c.publish(after, nil)
+		d.Close()
+		close(ended)
+	}()
 
 	gone := make(chan struct{})
 	go func() {
@@ -568,6 +664,23 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 			c.setAwake(d, k.set(p.KeepAwake))
 		case <-k.done():
 			c.setAwake(d, k.ended())
+		case h := <-c.hangup:
+			k.stop()
+			var err error
+			if h.stopServer {
+				err = stopServer(d, p.Port)
+			}
+			c.mu.Lock()
+			c.disconnected = true
+			c.mu.Unlock()
+			// A Retry asked for before the Disconnect must not undo it.
+			select {
+			case <-c.retry:
+			default:
+			}
+			h.result <- err
+			after = State{Phase: PhaseWaiting, Reason: ReasonDisconnected}
+			return
 		case <-c.cfg.After(KeepaliveInterval):
 			replied := make(chan error, 1)
 			go func() { replied <- d.Ping() }()
