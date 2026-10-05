@@ -1,0 +1,5 @@
+/ember
+/ember.exe
+/dist/
+*.log
+.DS_Store
