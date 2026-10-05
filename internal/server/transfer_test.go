@@ -173,7 +173,15 @@ func TestUploadStreamsToTheDevice(t *testing.T) {
 // part it had sent is deleted.
 func TestCancelledUploadLeavesNothing(t *testing.T) {
 	fake := fakedevice.New(t)
+	sentinel := fakedevice.Documents + "/Before.epub.part"
+	fake.WriteFile(t, sentinel, "x")
 	base := liveServer(t, fake)
+	// Let the clean-up of the new link run first, so it cannot be what
+	// removes the part below.
+	if res, err := http.Get(base + "/api/library/folder?path="); err == nil {
+		res.Body.Close()
+	}
+	waitFor(t, "the clean-up", func() bool { return fileSize(fake, sentinel) == -1 })
 	part := fakedevice.Documents + "/Gone.epub.part"
 	src := &gen{n: 8 << 20, at: 2 << 20, hook: func() error {
 		waitFor(t, "the part to appear", func() bool { return fileSize(fake, part) > 0 })
