@@ -213,3 +213,86 @@ func TestPingAndWaitFollowTheConnection(t *testing.T) {
 	fake.Start()
 	dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
 }
+
+const holdAwake = "lipc-set-prop com.lab126.powerd preventScreenSaver 1 || exit $?; cat >/dev/null; lipc-set-prop com.lab126.powerd preventScreenSaver 0"
+
+func waitUntil(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestStartRunsUntilStdinCloses(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	d := dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+	p, err := d.Start(holdAwake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "preventScreenSaver 1", fake.PreventScreenSaver)
+	select {
+	case <-p.Done():
+		t.Fatal("ended before stdin closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := p.CloseStdin(); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Done()
+	if status, ok := p.ExitStatus(); !ok || status != 0 {
+		t.Fatalf("ExitStatus = %d, %v", status, ok)
+	}
+	if fake.PreventScreenSaver() {
+		t.Fatal("preventScreenSaver still 1")
+	}
+	if ex := fake.Exits(); len(ex) != 1 || !ex[0].Delivered {
+		t.Fatalf("Exits = %+v", ex)
+	}
+}
+
+func TestStartReportsAMissingCommand(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless(), fakedevice.WithoutLipc())
+	d := dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+	p, err := d.Start(holdAwake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running without lipc-set-prop")
+	}
+	if status, ok := p.ExitStatus(); !ok || status != 127 {
+		t.Fatalf("ExitStatus = %d, %v; want 127", status, ok)
+	}
+}
+
+// A connection that drops ends the command on the Device without ember
+// closing stdin, and the client learns no exit status.
+func TestStartEndsWithTheConnection(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	d, err := device.Dial(context.Background(), device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Start(holdAwake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "preventScreenSaver 1", fake.PreventScreenSaver)
+	d.Close()
+	<-p.Done()
+	if _, ok := p.ExitStatus(); ok {
+		t.Fatal("exit status reported after the connection dropped")
+	}
+	waitUntil(t, "preventScreenSaver 0", func() bool { return !fake.PreventScreenSaver() })
+	waitUntil(t, "the command to end", func() bool { return len(fake.Exits()) == 1 })
+	if fake.Exits()[0].Delivered {
+		t.Fatal("exit status delivered over a dropped connection")
+	}
+}

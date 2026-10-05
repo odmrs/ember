@@ -64,6 +64,8 @@ type State struct {
 	Failure Failure `json:"failure,omitempty"`
 	// Scanning is set while the local network is searched for the Device.
 	Scanning bool `json:"scanning,omitempty"`
+	// KeepAwake is set while linked.
+	KeepAwake Awake `json:"keepAwake,omitempty"`
 }
 
 // Config wires a Connector. Only Store is required.
@@ -89,6 +91,11 @@ type Connector struct {
 	cancel context.CancelFunc // stops the running loop
 	done   chan struct{}      // closed when the last loop started has exited
 	closed bool
+	// awakeFailed is set once the keep-awake command has failed on its own;
+	// it is not tried again until keep-awake is switched off.
+	awakeFailed bool
+
+	reload chan struct{}
 }
 
 // New returns an idle Connector. Nothing is dialed until a Session opens.
@@ -102,7 +109,7 @@ func New(cfg Config) *Connector {
 	if cfg.After == nil {
 		cfg.After = time.After
 	}
-	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}}
+	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1)}
 }
 
 // State returns the current state.
@@ -195,12 +202,41 @@ func (c *Connector) Close() {
 	}
 }
 
+// Reload makes the Connector act on a changed Profile at once instead of at
+// the next attempt: a link whose login settings changed, or to a Device that
+// is no longer paired, is dropped and dialed again, and keep-awake follows
+// its setting.
+func (c *Connector) Reload() {
+	select {
+	case c.reload <- struct{}{}:
+	default:
+	}
+}
+
 // publish sets the state and the linked Device together and tells every
 // Session about a change.
 func (c *Connector) publish(s State, dev *device.Device) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.dev = dev
+	c.set(s)
+}
+
+// setAwake changes the keep-awake part of the state, if dev is still the
+// linked Device.
+func (c *Connector) setAwake(dev *device.Device, a Awake) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dev != dev {
+		return
+	}
+	s := c.state
+	s.KeepAwake = a
+	c.set(s)
+}
+
+// set changes the state; c.mu must be held.
+func (c *Connector) set(s State) {
 	if s == c.state {
 		return
 	}
@@ -284,7 +320,7 @@ func (c *Connector) run(ctx context.Context) {
 			switch {
 			case err == nil:
 				stopScan()
-				c.link(ctx, d, cfg.Addr)
+				c.link(ctx, d, cfg.Addr, p)
 				attempt, lastScan, failure = 0, 0, ""
 			case ctx.Err() != nil:
 				return
@@ -310,6 +346,8 @@ func (c *Connector) run(ctx context.Context) {
 				return
 			case <-next:
 				break wait
+			case <-c.reload:
+				break wait
 			case f := <-results():
 				scan.cancel()
 				scan = nil
@@ -317,8 +355,7 @@ func (c *Connector) run(ctx context.Context) {
 					c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure}, nil)
 					continue
 				}
-				c.moveTo(f.addr)
-				c.link(ctx, f.dev, f.addr)
+				c.link(ctx, f.dev, f.addr, c.moveTo(f.addr, p))
 				attempt, lastScan, failure = 0, 0, ""
 			}
 		}
@@ -366,33 +403,51 @@ func (c *Connector) scan(ctx context.Context, cfg device.Config, port int, out c
 	out <- found{}
 }
 
-// moveTo saves the Device's new address.
-func (c *Connector) moveTo(addr string) {
+// moveTo saves the Device's new address and returns the Profile with it.
+func (c *Connector) moveTo(addr string, p profile.Profile) profile.Profile {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return
+		return p
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return
+		return p
 	}
-	p, err := c.cfg.Store.Load()
-	if err == nil {
+	saved, err := c.cfg.Store.Update(func(p *profile.Profile) error {
 		p.Address, p.Port = host, port
-		err = c.cfg.Store.Save(p)
-	}
+		return nil
+	})
 	if err != nil {
 		log.Printf("connector: saving the new address %s: %v", addr, err)
+		p.Address, p.Port = host, port
+		return p
 	}
+	return saved
 }
 
-// link holds the link until it drops or ctx ends, then closes it. A Device
-// that leaves Wi-Fi does not close the TCP connection, so a ping every
-// KeepaliveInterval must be answered within the next one.
-func (c *Connector) link(ctx context.Context, d *device.Device, addr string) {
-	c.publish(State{Phase: PhaseLinked, Address: addr}, d)
+// login is what a link was made with. A Profile with a different one needs a
+// new link.
+type login struct {
+	addr, user, hostKey string
+	passwordless        bool
+}
+
+func loginOf(p profile.Profile) login {
+	return login{p.HostPort(), p.User, p.HostKey, p.Passwordless}
+}
+
+// link holds the link made with Profile p until it drops, ctx ends or a
+// reload finds the login changed, then closes it. A Device that leaves Wi-Fi
+// does not close the TCP connection, so a ping every KeepaliveInterval must
+// be answered within the next one. Keep-awake runs while the link is held
+// and is released before it closes.
+func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p profile.Profile) {
+	made := loginOf(p)
+	k := &keeper{c: c, d: d}
+	c.publish(State{Phase: PhaseLinked, Address: addr, KeepAwake: k.set(p.KeepAwake)}, d)
 	defer d.Close()
 	defer c.publish(State{Phase: PhaseSearching, Address: addr}, nil)
+	defer k.stop()
 
 	gone := make(chan struct{})
 	go func() {
@@ -405,6 +460,14 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string) {
 			return
 		case <-gone:
 			return
+		case <-c.reload:
+			p, err := c.cfg.Store.Load()
+			if err != nil || loginOf(p) != made {
+				return
+			}
+			c.setAwake(d, k.set(p.KeepAwake))
+		case <-k.done():
+			c.setAwake(d, k.ended())
 		case <-c.cfg.After(KeepaliveInterval):
 			replied := make(chan error, 1)
 			go func() { replied <- d.Ping() }()

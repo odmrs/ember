@@ -84,6 +84,11 @@ func (f *Flow) Profile() (profile.Profile, error) {
 	return f.cfg.Store.Load()
 }
 
+// UpdateProfile changes the paired Profile; see profile.Store.Update.
+func (f *Flow) UpdateProfile(change func(*profile.Profile) error) (profile.Profile, error) {
+	return f.cfg.Store.Update(change)
+}
+
 // PublicKey returns ember's public key as an authorized_keys line, creating
 // the key pair on first use.
 func (f *Flow) PublicKey() (string, error) {
@@ -302,4 +307,17 @@ func (f *Flow) CheckLock(ctx context.Context) (bool, error) {
 	f.state = State{Phase: PhaseDone, Candidates: []Candidate{}}
 	f.mu.Unlock()
 	return true, nil
+}
+
+// Forget unpairs: it stops any search, deletes the Profile and ember's key,
+// and leaves the flow ready to pair from the start.
+func (f *Flow) Forget() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancelScan != nil {
+		f.cancelScan()
+	}
+	f.scanID++
+	f.state = State{Phase: PhaseIdle, Candidates: []Candidate{}}
+	return f.cfg.Store.Forget()
 }

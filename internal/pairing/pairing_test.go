@@ -383,3 +383,39 @@ func TestNormalizeAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestForgetThenPairAgain(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	f, store := newFlow(t, fake.Addr())
+	ctx := context.Background()
+	c := scan(t, f, "").Candidates[0]
+	if _, err := f.Confirm(ctx, c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := store.PublicKey()
+
+	if err := f.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatalf("Load after Forget: %v", err)
+	}
+	if s := f.State(); s.Phase != PhaseIdle || len(s.Candidates) != 0 {
+		t.Fatalf("state after Forget = %+v", s)
+	}
+	if _, err := f.CheckLock(ctx); !errors.Is(err, ErrNotConfirmed) {
+		t.Fatalf("CheckLock after Forget: %v", err)
+	}
+
+	c = scan(t, f, "").Candidates[0]
+	if _, err := f.Confirm(ctx, c.Addr, c.Fingerprint); err != nil {
+		t.Fatalf("pairing again: %v", err)
+	}
+	fresh, _ := store.PublicKey()
+	if fresh == old {
+		t.Fatal("paired again with the forgotten key")
+	}
+	if got := fake.ReadFile(t, fakedevice.AuthorizedKeys); got != old+"\n"+fresh+"\n" {
+		t.Fatalf("authorized_keys = %q", got)
+	}
+}

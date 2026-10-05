@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,13 +52,27 @@ type Device struct {
 	keys    []ssh.Signer
 	pwdless atomic.Bool
 	mute    atomic.Bool
+	noLipc  atomic.Bool
 	free    atomic.Uint64
 	wg      sync.WaitGroup
 
-	mu    sync.Mutex
-	ln    net.Listener
-	conns map[net.Conn]bool
-	execs []string
+	mu      sync.Mutex
+	ln      net.Listener
+	conns   map[net.Conn]bool
+	execs   []string
+	running int
+	exits   []Exit
+	awake   bool // powerd's preventScreenSaver
+}
+
+// Exit is how a command a client ran on the fake ended.
+type Exit struct {
+	Command string
+	Status  int
+	// Delivered is false when the channel was already gone, so the client
+	// never saw the status: it dropped the connection rather than letting
+	// the command finish.
+	Delivered bool
 }
 
 // Option configures a Device.
@@ -75,6 +90,12 @@ func WithHostKeySeed(seed byte) Option {
 // Passwordless starts the fake with "Login without password" on.
 func Passwordless() Option {
 	return func(d *Device) { d.pwdless.Store(true) }
+}
+
+// WithoutLipc starts the fake without lipc-set-prop, like a Device whose
+// firmware lacks it.
+func WithoutLipc() Option {
+	return func(d *Device) { d.noLipc.Store(true) }
 }
 
 // New starts a fake Device and stops it when the test ends. Like dropbear
@@ -231,6 +252,28 @@ func (d *Device) Execs() []string {
 	return append([]string(nil), d.execs...)
 }
 
+// Running is how many commands are running on the fake right now.
+func (d *Device) Running() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.running
+}
+
+// Exits lists the commands that have finished, in order.
+func (d *Device) Exits() []Exit {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]Exit(nil), d.exits...)
+}
+
+// PreventScreenSaver is powerd's preventScreenSaver property, as
+// lipc-set-prop last set it.
+func (d *Device) PreventScreenSaver() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.awake
+}
+
 func (d *Device) serverConfig() *ssh.ServerConfig {
 	cfg := &ssh.ServerConfig{
 		ServerVersion: Banner,
@@ -319,16 +362,61 @@ func (d *Device) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			return
 		case "exec":
 			_ = req.Reply(true, nil)
+			cmd := string(payloadString(req.Payload))
 			d.mu.Lock()
-			d.execs = append(d.execs, string(payloadString(req.Payload)))
+			d.execs = append(d.execs, cmd)
+			d.running++
 			d.mu.Unlock()
-			_, _ = io.Copy(io.Discard, ch)
-			_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
+			status := d.run(cmd, ch)
+			_, err := ch.SendRequest("exit-status", false, binary.BigEndian.AppendUint32(nil, uint32(status)))
+			d.mu.Lock()
+			d.running--
+			d.exits = append(d.exits, Exit{Command: cmd, Status: status, Delivered: err == nil})
+			d.mu.Unlock()
 			return
 		default:
 			_ = req.Reply(false, nil)
 		}
 	}
+}
+
+const lipcPrefix = "lipc-set-prop com.lab126.powerd preventScreenSaver "
+
+// run plays the part of the Device's shell for the commands ember sends: a
+// "; "-separated list of steps, each of which may end in "|| exit $?". A
+// step is "cat >/dev/null", which reads stdin until it closes, or
+// lipc-set-prop setting powerd's preventScreenSaver. Any other command reads
+// stdin to the end and succeeds.
+func (d *Device) run(cmd string, stdin io.Reader) int {
+	steps := strings.Split(cmd, "; ")
+	for _, step := range steps {
+		step, _ = strings.CutSuffix(step, " || exit $?")
+		if v, ok := strings.CutPrefix(step, lipcPrefix); !(step == "cat >/dev/null" || ok && (v == "0" || v == "1")) {
+			_, _ = io.Copy(io.Discard, stdin)
+			return 0
+		}
+	}
+	status := 0
+	for _, step := range steps {
+		step, exitOnFail := strings.CutSuffix(step, " || exit $?")
+		if v, ok := strings.CutPrefix(step, lipcPrefix); ok {
+			status = 0
+			if d.noLipc.Load() {
+				status = 127
+			} else {
+				d.mu.Lock()
+				d.awake = v == "1"
+				d.mu.Unlock()
+			}
+		} else {
+			_, _ = io.Copy(io.Discard, stdin)
+			status = 0
+		}
+		if status != 0 && exitOnFail {
+			return status
+		}
+	}
+	return status
 }
 
 // payloadString decodes the SSH string at the start of an exec or subsystem

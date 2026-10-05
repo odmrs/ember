@@ -2,6 +2,7 @@
 
 const LANGS = { en: "en", pt: "pt-BR" };
 let messages = {};
+let lang = "en";
 
 function t(key) {
   return messages[key] ?? key;
@@ -40,8 +41,9 @@ function savedLang() {
   return navigator.language?.toLowerCase().startsWith("pt") ? "pt" : "en";
 }
 
-async function setLang(lang) {
-  messages = await api(`i18n/${lang}.json`);
+async function setLang(next) {
+  messages = await api(`i18n/${next}.json`);
+  lang = next;
   try { localStorage.setItem("ember.lang", lang); } catch {}
   document.documentElement.lang = LANGS[lang];
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
@@ -52,7 +54,8 @@ async function setLang(lang) {
 const status = { version: "", state: "unpaired", device: null };
 const pairing = { view: "start", candidates: [], error: null, locked: false };
 // conn mirrors the Connector, pushed by the server over /api/events.
-const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false };
+const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" };
+const ui = { settings: false };
 const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", linked: "state.linked", offline: "state.offline" };
 const FAILURES = {
   unreachable: "conn.unreachable",
@@ -84,6 +87,10 @@ const ERRORS = {
   no_space: "err.noSpace",
   incomplete: "err.incomplete",
   not_file: "err.notFile",
+  root_outside: "err.rootOutside",
+  bad_port: "err.badPort",
+  bad_user: "err.badUser",
+  confirmation_required: "err.confirmationRequired",
 };
 
 // errorText is an API error as the user reads it; a refused name says why.
@@ -133,21 +140,34 @@ function render() {
   if (status.version) $("version-line").textContent = `ember ${status.version} · ${location.host}`;
 
   const active = pairingActive();
-  const connecting = !active && conn.phase !== "linked";
+  const paired = status.state === "paired";
+  const settings = ui.settings && paired && !active;
+  const connecting = !active && !settings && conn.phase !== "linked";
+  $("settings-btn").disabled = !paired || active;
+  $("settings-btn").setAttribute("aria-pressed", settings);
+  $("pwd-banner").hidden = !status.device?.passwordless;
   $("pair").hidden = !active;
-  $("hero").hidden = active;
+  $("settings").hidden = !settings;
+  $("hero").hidden = active || settings;
   $("connect").hidden = !connecting;
-  $("library").hidden = active || connecting;
+  $("library").hidden = active || connecting || settings;
   if (active) renderPairing();
   if (connecting) renderConnecting();
+  if (settings) renderSettings();
 
   const d = status.device;
   if (d) {
     const address = conn.phase === "linked" ? conn.address : `${d.address}:${d.port}`;
     $("device-line").textContent = `${d.user}@${address} · ${d.fingerprint}`;
     renderHero(d);
+  } else {
+    $("device-line").textContent = "—";
   }
-  if (!active && !connecting) renderLibrary();
+  const awake = conn.phase === "linked" ? conn.keepAwake : "";
+  $("awake-line").hidden = !awake;
+  $("awake-line").dataset.state = awake;
+  if (awake) $("awake-line").textContent = t(`awake.${awake}`);
+  if (!active && !connecting && !settings) renderLibrary();
   if (uploads.items.length) renderQueue();
 }
 
@@ -606,6 +626,129 @@ function ask({ title, body, warn, ok, cancel = t("cancel"), okClass = "danger" }
   return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }));
 }
 
+function openSettings() {
+  ui.settings = true;
+  fillSettings();
+  $("set-msg").textContent = "";
+  render();
+  $("set-root").focus();
+}
+
+function closeSettings() {
+  ui.settings = false;
+  render();
+}
+
+// fillSettings puts the saved Profile into the form. It runs when the screen
+// opens and after a save, never on a plain render, so typing is not undone.
+function fillSettings() {
+  const d = status.device;
+  if (!d) return;
+  $("set-root").value = d.libraryRoot;
+  $("set-port").value = d.port;
+  $("set-user").value = d.user;
+  $("set-awake").checked = d.keepAwake;
+}
+
+function renderSettings() {
+  const on = !!status.device?.passwordless;
+  $("pwd-state").textContent = t(on ? "pwd.on" : "pwd.off");
+  $("pwd-state").dataset.on = on;
+  $("pwd-toggle").textContent = t(on ? "pwd.turnOff" : "pwd.turnOn");
+  $("set-lang").value = lang;
+}
+
+function settingsMessage(text, bad) {
+  const m = $("set-msg");
+  m.textContent = text;
+  m.className = bad ? "set-msg bad" : "set-msg ok";
+}
+
+// The Library root is checked on the Kindle, so these errors read as answers
+// about the folder typed, not about a Book.
+const ROOT_ERRORS = { not_found: "set.err.rootMissing", not_folder: "set.err.rootNotFolder", not_linked: "set.err.rootNeedsLink" };
+
+async function saveSettings() {
+  const d = status.device;
+  if (!d) return;
+  const port = Number($("set-port").value);
+  if (!Number.isInteger(port)) return settingsMessage(t("err.badPort"), true);
+  const want = { libraryRoot: $("set-root").value.trim(), port, user: $("set-user").value.trim(), keepAwake: $("set-awake").checked };
+  const body = {};
+  for (const [k, v] of Object.entries(want)) if (v !== d[k]) body[k] = v;
+  if (!Object.keys(body).length) return settingsMessage(t("set.unchanged"), false);
+
+  $("set-save").disabled = true;
+  try {
+    const res = await api("api/settings", body);
+    const rootChanged = res.device.libraryRoot !== d.libraryRoot;
+    status.device = res.device;
+    fillSettings();
+    settingsMessage(t("set.saved"), false);
+    log(t("log.settingsSaved"));
+    if (rootChanged) {
+      Object.assign(lib, { path: "", folder: null, stats: null, children: new Map(), expanded: new Set([""]), sel: new Set(), anchor: null, edit: null });
+      history.replaceState(null, "", location.pathname);
+      if (conn.phase === "linked") refreshLibrary();
+    }
+  } catch (err) {
+    settingsMessage(t(ROOT_ERRORS[err.code] ?? ERRORS[err.code] ?? "err.internal"), true);
+  } finally {
+    $("set-save").disabled = false;
+    render();
+  }
+}
+
+// Turning passwordless mode on is two requests with the user's answer in
+// between: the server hands out a one-time token, and only a confirm
+// carrying it switches the mode on. Turning it off is one click.
+async function togglePasswordless() {
+  try {
+    if (status.device?.passwordless) {
+      status.device = (await api("api/settings/passwordless/off", {})).device;
+      log(t("log.pwdOff"));
+      return;
+    }
+    const { token } = await api("api/settings/passwordless/request", {});
+    const ok = await ask({
+      title: t("pwd.dlgTitle"),
+      body: [t("pwd.dlgBody"), t("pwd.dlgKindle")],
+      warn: t("pwd.dlgWarn"),
+      ok: t("pwd.dlgOk"),
+    });
+    if (!ok) return log(t("log.pwdKept"));
+    status.device = (await api("api/settings/passwordless/confirm", { token })).device;
+    log(t("log.pwdOn"));
+  } catch (err) {
+    log(errorText(err));
+  } finally {
+    render();
+  }
+}
+
+async function forget() {
+  const ok = await ask({
+    title: t("forget.dlgTitle"),
+    body: [t("forget.dlgBody"), t("forget.dlgKey")],
+    ok: t("forget.button"),
+  });
+  if (!ok) return;
+  try {
+    await api("api/settings/forget", { confirm: true });
+  } catch (err) {
+    return log(errorText(err));
+  }
+  Object.assign(status, { state: "unpaired", device: null });
+  Object.assign(pairing, { view: "start", candidates: [], error: null, locked: false });
+  Object.assign(lib, { path: "", folder: null, stats: null, children: new Map(), expanded: new Set([""]), sel: new Set(), anchor: null, edit: null });
+  ui.settings = false;
+  history.replaceState(null, "", location.pathname);
+  // ember made a new key pair; the old one shown for USB is void.
+  $("pubkey").textContent = "";
+  log(t("log.forgotten"));
+  render();
+}
+
 function log(text) {
   const e = $("log");
   delete e.dataset.i18n;
@@ -709,6 +852,11 @@ document.addEventListener("click", (e) => {
     case "download": return download(selectedFile());
     case "cancel-upload": return cancelUpload(Number(b.dataset.id));
     case "clear-queue": return clearQueue();
+    case "settings": return ui.settings ? closeSettings() : openSettings();
+    case "settings-open": return openSettings();
+    case "settings-close": return closeSettings();
+    case "passwordless": return togglePasswordless();
+    case "forget": return forget();
     case "search": return search("");
     case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint);
     case "finish":
@@ -1062,6 +1210,15 @@ $("manual").addEventListener("submit", (e) => {
   if (address) search(address);
 });
 
+$("settings-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  saveSettings();
+});
+
+$("set-lang").addEventListener("change", (e) => {
+  setLang(e.target.value).catch((err) => log(err.message));
+});
+
 $("usb").addEventListener("toggle", (e) => {
   if (e.target.open) showPublicKey();
 });
@@ -1072,7 +1229,7 @@ function listen() {
   const events = new EventSource("api/events");
   events.addEventListener("state", (e) => {
     const was = conn.phase;
-    Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false }, JSON.parse(e.data), { online: true });
+    Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" }, JSON.parse(e.data), { online: true });
     if (was !== "linked" && conn.phase === "linked") {
       log(`${t("log.linked")} ${conn.address}`);
       refreshLibrary();

@@ -104,3 +104,82 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Errorf("%s mode = %o, want %o", filepath.Base(path), got, want)
 	}
 }
+
+func TestUpdateChangesTheSavedProfile(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	p := New("192.168.0.42", DefaultPort)
+	if err := s.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Update(func(p *Profile) error {
+		p.Port, p.KeepAwake = 22, false
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != reloaded || reloaded.Port != 22 || reloaded.KeepAwake {
+		t.Fatalf("returned %+v, saved %+v", got, reloaded)
+	}
+}
+
+func TestUpdateSavesNothingOnError(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	if err := s.Save(New("192.168.0.42", DefaultPort)); err != nil {
+		t.Fatal(err)
+	}
+	refused := errors.New("refused")
+	_, err := s.Update(func(p *Profile) error {
+		p.Port = 22
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v", err)
+	}
+	if p, _ := s.Load(); p.Port != DefaultPort {
+		t.Fatalf("port saved anyway: %d", p.Port)
+	}
+}
+
+func TestUpdateWithoutProfile(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	if _, err := s.Update(func(*Profile) error { return nil }); !errors.Is(err, ErrNotPaired) {
+		t.Fatalf("err = %v, want ErrNotPaired", err)
+	}
+}
+
+func TestForgetDropsThePairingAndTheKey(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	old, err := s.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(New("192.168.0.42", DefaultPort)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Load(); !errors.Is(err, ErrNotPaired) {
+		t.Fatalf("Load after Forget: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("left behind: %v", entries)
+	}
+	fresh, err := s.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == old {
+		t.Fatal("the forgotten Device's key is still ember's key")
+	}
+	if err := s.Forget(); err != nil {
+		t.Fatalf("second Forget: %v", err)
+	}
+}

@@ -28,3 +28,13 @@ passwordless login off.
 Discovery logs into each dropbear host on the LAN with the passwordless login
 read-only, so the candidate list can show what each device is before the user picks
 one. ember's key is not offered and nothing is written until the confirmation.
+
+## Amendment: the confirmation is enforced by the server
+
+Passwordless mode cannot be switched on by a single request. The dashboard first
+asks the server for a confirmation token, then shows the risk dialog, and only a
+second request carrying that token turns the mode on. The server holds one token
+at a time; it is random (256 bits), expires after two minutes, and any attempt to
+use it spends it, right or wrong. The general settings request does not accept the
+field at all. Turning the mode off is one request. Both still pass the same-origin
+checks every write passes.
