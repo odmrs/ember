@@ -173,6 +173,19 @@ func (d *Device) Close() error {
 	return d.ssh.Close()
 }
 
+// Wait blocks until the connection is closed, from either end.
+func (d *Device) Wait() error {
+	return d.ssh.Wait()
+}
+
+// Ping asks the Device for a reply over the open connection. Any reply, even
+// a refusal, proves the link is alive; Ping blocks until one arrives or the
+// connection closes, so callers wanting a deadline close the Device.
+func (d *Device) Ping() error {
+	_, _, err := d.ssh.SendRequest("keepalive@openssh.com", true, nil)
+	return err
+}
+
 // ErrTooLarge is returned by ReadFile when the file exceeds the given limit.
 var ErrTooLarge = errors.New("device: file too large")
 

@@ -38,12 +38,17 @@ const (
 
 // Device is a running fake.
 type Device struct {
+	t       testing.TB
 	root    string
-	ln      net.Listener
+	addr    string
 	keys    []ssh.Signer
 	pwdless atomic.Bool
+	mute    atomic.Bool
+	wg      sync.WaitGroup
 
 	mu    sync.Mutex
+	ln    net.Listener
+	conns map[net.Conn]bool
 	execs []string
 }
 
@@ -73,8 +78,10 @@ func New(t testing.TB, opts ...Option) *Device {
 		t.Fatal(err)
 	}
 	d := &Device{
-		root: t.TempDir(),
-		keys: []ssh.Signer{mustSigner(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))), mustSigner(ecKey)},
+		t:     t,
+		conns: map[net.Conn]bool{},
+		root:  t.TempDir(),
+		keys:  []ssh.Signer{mustSigner(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))), mustSigner(ecKey)},
 	}
 	for _, o := range opts {
 		o(d)
@@ -87,36 +94,83 @@ func New(t testing.TB, opts ...Option) *Device {
 	d.WriteFile(t, GitRev, "v2026.07.1\n")
 	d.WriteFile(t, Settings, "-- we can read Lua syntax here!\nreturn {\n    [\"document_metadata_folder\"] = \"doc\",\n    [\"home_dir\"] = \"/mnt/us/documents\",\n}\n")
 
-	d.ln, err = net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wg sync.WaitGroup
+	d.listen("127.0.0.1:0")
 	t.Cleanup(func() {
-		d.ln.Close()
-		wg.Wait()
+		d.Stop()
+		d.wg.Wait()
 	})
-	cfg := d.serverConfig()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			conn, err := d.ln.Accept()
-			if err != nil {
-				return
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				d.serve(conn, cfg)
-			}()
-		}
-	}()
 	return d
 }
 
-// Addr is the fake's "host:port".
-func (d *Device) Addr() string { return d.ln.Addr().String() }
+func (d *Device) listen(addr string) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.ln = ln
+	d.addr = ln.Addr().String()
+	d.mu.Unlock()
+	cfg := d.serverConfig()
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			d.mu.Lock()
+			if d.ln != ln {
+				// Stop ran between Accept and here.
+				d.mu.Unlock()
+				conn.Close()
+				continue
+			}
+			d.conns[conn] = true
+			d.mu.Unlock()
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				d.serve(conn, cfg)
+				d.mu.Lock()
+				delete(d.conns, conn)
+				d.mu.Unlock()
+			}()
+		}
+	}()
+}
+
+// Addr is the fake's "host:port". It stays the same across Stop and Start.
+func (d *Device) Addr() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.addr
+}
+
+// Stop shuts the SSH server down and drops every open connection, like the
+// Kindle going to sleep or KOReader's SSH server being stopped.
+func (d *Device) Stop() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ln != nil {
+		d.ln.Close()
+		d.ln = nil
+	}
+	for c := range d.conns {
+		c.Close()
+	}
+}
+
+// Start brings the SSH server back on the same address after Stop.
+func (d *Device) Start() {
+	d.listen(d.Addr())
+}
+
+// SetUnresponsive makes open connections stop answering requests while
+// staying open, like a Device that dropped off Wi-Fi without closing them.
+// New connections still log in.
+func (d *Device) SetUnresponsive(on bool) { d.mute.Store(on) }
 
 // HostKey is the ed25519 host key the fake presents.
 func (d *Device) HostKey() ssh.PublicKey { return d.keys[0].PublicKey() }
@@ -216,7 +270,13 @@ func (d *Device) serve(conn net.Conn, cfg *ssh.ServerConfig) {
 		return
 	}
 	defer sc.Close()
-	go ssh.DiscardRequests(reqs)
+	go func() {
+		for req := range reqs {
+			if req.WantReply && !d.mute.Load() {
+				_ = req.Reply(false, nil)
+			}
+		}
+	}()
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
 			_ = nc.Reject(ssh.UnknownChannelType, "only sessions")
