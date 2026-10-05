@@ -78,6 +78,9 @@ type Config struct {
 	Targets func(ports []int) ([]string, error)
 	// After is the clock the loop waits on; time.After when nil.
 	After func(time.Duration) <-chan time.Time
+	// Listening reports whether the Device still accepts new connections on
+	// addr; a TCP connect when nil.
+	Listening func(ctx context.Context, addr string) bool
 }
 
 // Connector is safe for concurrent use.
@@ -109,6 +112,9 @@ func New(cfg Config) *Connector {
 	}
 	if cfg.After == nil {
 		cfg.After = time.After
+	}
+	if cfg.Listening == nil {
+		cfg.Listening = listening
 	}
 	return &Connector{cfg: cfg, state: State{Phase: PhaseIdle}, subs: map[chan State]struct{}{}, reload: make(chan struct{}, 1)}
 }
@@ -528,6 +534,12 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 				if err != nil {
 					return
 				}
+				// Stopping the SSH server on the Kindle leaves established
+				// connections running, so a live link alone would ignore the
+				// user switching it off. A closed listener ends the link.
+				if !c.cfg.Listening(ctx, addr) {
+					return
+				}
 			case <-gone:
 				return
 			case <-ctx.Done():
@@ -537,6 +549,20 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 			}
 		}
 	}
+}
+
+// listening reports false only when the Device refuses the connection. A
+// timeout is left to the keepalive to judge, so a Wi-Fi hiccup does not end a
+// working link.
+func listening(ctx context.Context, addr string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return !refused(err)
+	}
+	conn.Close()
+	return true
 }
 
 func classify(err error) Failure {

@@ -193,7 +193,7 @@ func (d *Device) Addr() string {
 }
 
 // Stop shuts the SSH server down and drops every open connection, like the
-// Kindle going to sleep or KOReader's SSH server being stopped.
+// Kindle going to sleep.
 func (d *Device) Stop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -203,6 +203,18 @@ func (d *Device) Stop() {
 	}
 	for c := range d.conns {
 		c.Close()
+	}
+}
+
+// StopListening closes the listener but keeps open connections alive. That is
+// what stopping KOReader's SSH server does: dropbear serves each connection in
+// its own process, and only the one accepting new connections goes away.
+func (d *Device) StopListening() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ln != nil {
+		d.ln.Close()
+		d.ln = nil
 	}
 }
 

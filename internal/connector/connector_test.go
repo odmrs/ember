@@ -238,6 +238,27 @@ func TestNetworkSweepsAreSpacedOut(t *testing.T) {
 	}
 }
 
+func TestStoppingTheSSHServerEndsTheLink(t *testing.T) {
+	fake := fakedevice.New(t)
+	r := newRig(t, fake, fake.Addr(), fake)
+	c := r.connector(nil, fast)
+
+	states := session(t, c)
+	waitFor(t, states, "linked", func(s State) bool { return s.Phase == PhaseLinked })
+	fake.StopListening()
+	s := waitFor(t, states, "searching after the server stopped", func(s State) bool {
+		return s.Phase == PhaseSearching && s.Failure == FailPortClosed
+	})
+	if s.Address != fake.Addr() {
+		t.Fatalf("state = %+v", s)
+	}
+	if _, err := c.Device(); err != ErrNotLinked {
+		t.Fatalf("still linked: %v", err)
+	}
+	fake.Start()
+	waitFor(t, states, "relinked", func(s State) bool { return s.Phase == PhaseLinked })
+}
+
 func TestHostKeyMismatchIsReported(t *testing.T) {
 	fake := fakedevice.New(t)
 	impostor := fakedevice.New(t, fakedevice.WithHostKeySeed(9), fakedevice.Passwordless())
