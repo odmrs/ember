@@ -528,19 +528,28 @@ func TestReloadCancelsTheSearch(t *testing.T) {
 
 // A search result is only taken if the Profile still has the login the
 // search dialed with.
+//
+// The clock never fires, so the loop stays on its first attempt: the result
+// cannot land after the round has ended, and the only way out of Scanning is
+// the loop handling that result.
 func TestStaleSearchResultIsDropped(t *testing.T) {
 	fake := fakedevice.New(t)
 	saved := closedPort(t)
 	r := newRig(t, fake, saved, fake)
 	scan := newHeldScan(fake.Addr())
-	c := New(Config{Store: r.store, Targets: scan.targets, After: fast})
+	clock := &manualClock{}
+	c := New(Config{Store: r.store, Targets: scan.targets, After: clock.After})
 	t.Cleanup(c.Close)
 	states := session(t, c)
+	waitFor(t, states, "the search to start", func(s State) bool { return s.Scanning })
 	<-scan.started
 
 	r.update(func(p *profile.Profile) { p.User = "reader" })
 	close(scan.release)
-	waitFor(t, states, "the search to end", func(s State) bool { return s.Phase == PhaseSearching && !s.Scanning })
+	s := waitFor(t, states, "the search to end", func(s State) bool { return !s.Scanning })
+	if s.Phase != PhaseSearching || s.Attempt != 1 || s.Address != saved {
+		t.Fatalf("state after the search = %+v, want still searching on attempt 1 at %s", s, saved)
+	}
 
 	if _, err := c.Device(); err != ErrNotLinked {
 		t.Fatal("linked with a login the Profile no longer has")
