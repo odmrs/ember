@@ -33,7 +33,7 @@ func listed(t *testing.T, fsys FS, rel string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return strings.Join(names(f), ",")
+	return strings.Join(entryNames(f), ",")
 }
 
 func mustNot(t *testing.T, what string, err, want error) {
