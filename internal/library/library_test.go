@@ -3,11 +3,13 @@ package library
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/odmrs/ember/internal/device"
@@ -21,6 +23,7 @@ const root = "/mnt/us/documents"
 type disk interface {
 	WriteFile(t testing.TB, devicePath, content string)
 	Path(devicePath string) string
+	SetFreeSpace(free uint64)
 }
 
 // backends runs a test against a local directory and against the fake
@@ -338,10 +341,14 @@ func TestSidecarName(t *testing.T) {
 
 // dirFS serves Device paths from a local directory, mapped the same way the
 // fake Device maps them, with links written as host paths.
-type dirFS struct{ root string }
+type dirFS struct {
+	root string
+	free atomic.Uint64
+}
 
 func newDirFS(t *testing.T) *dirFS {
 	d := &dirFS{root: t.TempDir()}
+	d.free.Store(fakedevice.DefaultFree)
 	mkdir(t, d, root)
 	return d
 }
@@ -390,8 +397,24 @@ func (d *dirFS) FreeSpace(p string) (free, total uint64, err error) {
 	if _, err := os.Stat(d.Path(p)); err != nil {
 		return 0, 0, err
 	}
-	return 750, 1000, nil
+	return d.free.Load(), fakedevice.TotalSpace, nil
 }
+
+func (d *dirFS) SetFreeSpace(free uint64) { d.free.Store(free) }
+
+func (d *dirFS) Create(p string, src io.Reader) (int64, error) {
+	f, err := os.Create(d.Path(p))
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(f, src)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
+}
+
+func (d *dirFS) Open(p string) (io.ReadCloser, error) { return os.Open(d.Path(p)) }
 
 func (d *dirFS) Mkdir(p string) error         { return os.Mkdir(d.Path(p), 0o755) }
 func (d *dirFS) Rename(from, to string) error { return os.Rename(d.Path(from), d.Path(to)) }

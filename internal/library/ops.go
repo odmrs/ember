@@ -96,8 +96,8 @@ type item struct {
 func (it item) path() string { return path.Join(it.dir, it.name) }
 
 // item finds rel among the entries of its folder, which it also returns.
-// Only what List shows can be acted on: links, hidden names and Sidecars on
-// their own are not found.
+// Only what List shows can be acted on: links, hidden names, Sidecars and
+// what is inside them are not found.
 func (l *Library) item(rel string) (item, []fs.FileInfo, error) {
 	rel, err := clean(rel)
 	if err != nil {
@@ -105,6 +105,9 @@ func (l *Library) item(rel string) (item, []fs.FileInfo, error) {
 	}
 	if rel == "" {
 		return item{}, nil, ErrRoot
+	}
+	if unlisted(parent(rel)) {
+		return item{}, nil, fmt.Errorf("%w: %s", ErrNotFound, rel)
 	}
 	dir, infos, err := l.readFolder(parent(rel))
 	if err != nil {
@@ -126,6 +129,17 @@ func (l *Library) item(rel string) (item, []fs.FileInfo, error) {
 		return it, infos, nil
 	}
 	return item{}, nil, fmt.Errorf("%w: %s", ErrNotFound, rel)
+}
+
+// unlisted reports whether the cleaned folder path rel goes through a
+// hidden folder or a Sidecar, which List never shows.
+func unlisted(rel string) bool {
+	for _, folder := range strings.Split(rel, "/") {
+		if strings.HasPrefix(folder, ".") || strings.HasSuffix(strings.ToLower(folder), ".sdr") {
+			return true
+		}
+	}
+	return false
 }
 
 // sidecarOf finds book's Sidecar among its siblings, and whether another

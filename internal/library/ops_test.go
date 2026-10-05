@@ -103,6 +103,8 @@ func TestValidName(t *testing.T) {
 		".hidden":                ReasonHidden,
 		"Dune.sdr":               ReasonSidecar,
 		"Dune.SDR":               ReasonSidecar,
+		"Dune.epub.part":         ReasonPart,
+		"x.PART":                 ReasonPart,
 		"bad\xffutf8":            ReasonEncoding,
 	}
 	for name, reason := range bad {
