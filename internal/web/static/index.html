@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ember</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <header class="box top">
+    <span class="brand">EMBER &lt;KINDLE&gt;</span>
+    <span class="tagline" data-i18n="tagline"></span>
+    <nav class="right">
+      <span id="link"><span class="dot"></span><span id="link-text"></span></span>
+      <button type="button" class="bracket" disabled data-i18n="settings"></button>
+      <span class="lang">[<button type="button" data-lang="en">EN</button>|<button type="button" data-lang="pt">PT</button>]</span>
+      <button type="button" class="bracket" disabled data-i18n="help"></button>
+    </nav>
+  </header>
+
+  <section class="box hero">
+    <span class="path" id="path">—</span>
+    <span class="tag">KOREADER</span>
+    <span class="big" id="book-count">0</span>
+    <span class="dim" data-i18n="books"></span>
+    <span class="right">
+      <span><span data-i18n="free"></span> <b id="free">—</b></span>
+      <span><span data-i18n="folders"></span> <b id="folder-count">0</b></span>
+    </span>
+  </section>
+
+  <main class="main">
+    <section class="box">
+      <div class="head"><span class="label" data-i18n="library"></span></div>
+      <div class="tree" id="tree"></div>
+    </section>
+    <section class="box files">
+      <div class="head">
+        <span class="label" data-i18n="files"></span>
+        <div class="toolbar">
+          <button type="button" disabled data-i18n="upload"></button>
+          <button type="button" disabled data-i18n="newFolder"></button>
+          <button type="button" disabled data-i18n="download"></button>
+          <button type="button" disabled data-i18n="delete"></button>
+        </div>
+      </div>
+      <div class="empty" id="empty">
+        <div class="label" data-i18n="unpairedTitle"></div>
+        <p class="dim" data-i18n="unpairedBody"></p>
+      </div>
+    </section>
+  </main>
+
+  <div class="box wire"><span class="label" data-i18n="log"></span><span id="log" data-i18n="log.ready"></span></div>
+  <footer class="box status"><span id="device-line">—</span><span id="version-line"></span></footer>
+</div>
+</body>
+</html>

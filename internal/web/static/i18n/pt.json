@@ -1,0 +1,21 @@
+{
+  "tagline": "LOCAL · SSH · SEM NUVEM",
+  "settings": "CONFIG",
+  "help": "AJUDA",
+  "books": "LIVROS",
+  "free": "Livre",
+  "folders": "Pastas",
+  "library": "Biblioteca",
+  "files": "Arquivos",
+  "upload": "+ Enviar",
+  "newFolder": "+ Pasta",
+  "download": "Baixar",
+  "delete": "Apagar",
+  "log": "Log",
+  "log.ready": "Pronto. Nada sai deste computador além do SSH com o seu Kindle.",
+  "unpairedTitle": "Nenhum Kindle pareado",
+  "unpairedBody": "O pareamento vem a seguir: o ember acha seu Kindle, fixa a chave dele e instala a própria chave SSH nele.",
+  "state.unpaired": "NÃO PAREADO",
+  "state.searching": "PROCURANDO",
+  "state.linked": "CONECTADO"
+}

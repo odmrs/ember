@@ -1,0 +1,21 @@
+{
+  "tagline": "LOCAL · SSH · NO CLOUD",
+  "settings": "SETTINGS",
+  "help": "HELP",
+  "books": "BOOKS",
+  "free": "Free",
+  "folders": "Folders",
+  "library": "Library",
+  "files": "Files",
+  "upload": "+ Upload",
+  "newFolder": "+ Folder",
+  "download": "Get",
+  "delete": "Delete",
+  "log": "Log",
+  "log.ready": "Ready. Nothing leaves this computer except SSH to your Kindle.",
+  "unpairedTitle": "No Kindle paired yet",
+  "unpairedBody": "Pairing comes next: ember will find your Kindle, pin its key and install its own SSH key on it.",
+  "state.unpaired": "UNPAIRED",
+  "state.searching": "SEARCHING",
+  "state.linked": "LINKED"
+}
