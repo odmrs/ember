@@ -59,7 +59,9 @@ func (k *keeper) set(on bool) Awake {
 	}
 	p, err := k.d.Start(keepAwakeCommand)
 	if err != nil {
-		log.Printf("connector: keep-awake could not start: %v", err)
+		if k.fail() {
+			log.Printf("connector: keep-awake unavailable: the command could not start: %v", err)
+		}
 		return AwakeUnavailable
 	}
 	k.p = p
@@ -74,11 +76,24 @@ func (k *keeper) done() <-chan struct{} {
 	return k.p.Done()
 }
 
+// fail records that keep-awake cannot work on this Device and reports
+// whether that is news, so it is logged once.
+func (k *keeper) fail() bool {
+	k.c.mu.Lock()
+	defer k.c.mu.Unlock()
+	first := !k.c.awakeFailed
+	k.c.awakeFailed = true
+	return first
+}
+
 // ended handles the command ending while ember still wanted it. Without an
-// exit status the connection is going down and the link ends with it.
-// Otherwise the Device could not keep itself awake, which trying again will
-// not change: it is logged once and left alone until keep-awake is switched
-// off and on.
+// exit status the connection is going down and the link ends with it. With
+// status 0 the command ran to its end: something on the Device closed its
+// input, and it allowed the screen saver again on the way out. Nothing
+// failed, so keep-awake shows off for this link and starts again on the
+// next one. Any other status means the Device could not keep itself awake,
+// which trying again will not change: it is logged once and left alone
+// until keep-awake is switched off and on.
 func (k *keeper) ended() Awake {
 	status, ok := k.p.ExitStatus()
 	k.p.Close()
@@ -86,11 +101,11 @@ func (k *keeper) ended() Awake {
 	if !ok {
 		return AwakeOff
 	}
-	k.c.mu.Lock()
-	first := !k.c.awakeFailed
-	k.c.awakeFailed = true
-	k.c.mu.Unlock()
-	if first {
+	if status == 0 {
+		log.Printf("connector: keep-awake ended on the Device's side; it starts again with the next link")
+		return AwakeOff
+	}
+	if k.fail() {
 		if status == 127 {
 			log.Printf("connector: keep-awake unavailable: the Device has no lipc-set-prop")
 		} else {

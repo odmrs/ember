@@ -53,6 +53,8 @@ type Device struct {
 	pwdless atomic.Bool
 	mute    atomic.Bool
 	noLipc  atomic.Bool
+	noExec  atomic.Bool
+	quick   atomic.Bool
 	free    atomic.Uint64
 	wg      sync.WaitGroup
 
@@ -96,6 +98,18 @@ func Passwordless() Option {
 // firmware lacks it.
 func WithoutLipc() Option {
 	return func(d *Device) { d.noLipc.Store(true) }
+}
+
+// RefusingExec starts the fake refusing every command, so starting one
+// fails. Refused commands are still recorded in Execs.
+func RefusingExec() Option {
+	return func(d *Device) { d.noExec.Store(true) }
+}
+
+// QuickExit starts the fake ending every command at once with status 0,
+// without reading its stdin.
+func QuickExit() Option {
+	return func(d *Device) { d.quick.Store(true) }
 }
 
 // New starts a fake Device and stops it when the test ends. Like dropbear
@@ -361,13 +375,22 @@ func (d *Device) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			srv.Close()
 			return
 		case "exec":
-			_ = req.Reply(true, nil)
 			cmd := string(payloadString(req.Payload))
 			d.mu.Lock()
 			d.execs = append(d.execs, cmd)
+			d.mu.Unlock()
+			if d.noExec.Load() {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			_ = req.Reply(true, nil)
+			d.mu.Lock()
 			d.running++
 			d.mu.Unlock()
-			status := d.run(cmd, ch)
+			status := 0
+			if !d.quick.Load() {
+				status = d.run(cmd, ch)
+			}
 			_, err := ch.SendRequest("exit-status", false, binary.BigEndian.AppendUint32(nil, uint32(status)))
 			d.mu.Lock()
 			d.running--
