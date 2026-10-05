@@ -24,3 +24,7 @@ dropbear banner, so the user never types an address. The single required user ac
 is confirming the host key fingerprint of the found Device; no write happens before
 it. After the key is installed, ember detects when the user has switched
 passwordless login off.
+
+Discovery logs into each dropbear host on the LAN with the passwordless login
+read-only, so the candidate list can show what each device is before the user picks
+one. ember's key is not offered and nothing is written until the confirmation.

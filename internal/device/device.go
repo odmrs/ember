@@ -216,7 +216,8 @@ func (d *Device) MkdirAll(path string, perm fs.FileMode) error {
 	if err := d.sftp.Mkdir(path); err != nil {
 		return err
 	}
-	return d.sftp.Chmod(path, perm)
+	d.chmod(path, perm)
+	return nil
 }
 
 // Append adds data to the end of path, creating the file with mode perm if it
@@ -245,9 +246,16 @@ func (d *Device) Append(path string, data []byte, perm fs.FileMode) error {
 		return err
 	}
 	if created {
-		return d.sftp.Chmod(path, perm)
+		d.chmod(path, perm)
 	}
 	return nil
+}
+
+// chmod applies perm where the file system supports it. The Kindle's user
+// storage is FAT, which has no permission bits and may refuse the request, so
+// a failure is not an error: whatever relies on the file is verified directly.
+func (d *Device) chmod(path string, perm fs.FileMode) {
+	_ = d.sftp.Chmod(path, perm)
 }
 
 // FreeSpace returns the free and total bytes of the file system holding path.
