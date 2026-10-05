@@ -427,9 +427,12 @@ function fileRow(e, stop) {
     if (e.kind === "other") tr.title = t("otherHint");
     tr.append(el("td", { class: "num" }, bytes(e.size)));
   }
-  tr.append(el("td", { class: "act" }, el("span", { class: "rowact" },
+  const acts = el("span", { class: "rowact" });
+  if (e.kind === "book") acts.append(el("button", { type: "button", "data-action": "clean-one", "data-path": e.path }, t("cleanName")));
+  acts.append(
     el("button", { type: "button", "data-action": "rename", "data-path": e.path }, t("rename")),
-    el("button", { type: "button", class: "bad", "data-action": "delete-one", "data-path": e.path }, t("del")))));
+    el("button", { type: "button", class: "bad", "data-action": "delete-one", "data-path": e.path }, t("del")));
+  tr.append(el("td", { class: "act" }, acts));
   return tr;
 }
 
@@ -457,6 +460,7 @@ function renderLibrary() {
   if (focused && !lib.edit) cursorRow()?.focus();
   $("empty").hidden = !lib.folder || lib.folder.entries.length > 0 || lib.edit?.kind === "new";
   $("tb-folder").disabled = !lib.folder || lib.busy;
+  $("tb-clean").disabled = !lib.folder?.books || lib.busy;
   $("tb-upload").disabled = !lib.folder;
   markToolbar();
 
@@ -624,7 +628,7 @@ async function change(op, body, edit, subject) {
     applyChange(res);
     return res;
   } catch (err) {
-    if (err.code === "open_now_needs_confirm" || err.code === "move_incomplete") throw err;
+    if (["open_now_needs_confirm", "move_incomplete", "rename_incomplete"].includes(err.code)) throw err;
     log(errorText(err, subject), err.message);
     if (err.code === "not_found") refreshAfterChange();
     return null;
@@ -758,13 +762,141 @@ function remove(paths) {
   });
 }
 
+// cleanNames proposes clean names for the Books in the folder at p, or for
+// the one Book at p, and renames the ones the user keeps. Reading the
+// proposals renames nothing; the renames go through the normal rename path,
+// all checked before any is made.
+const SOURCES = { metadata: "src.metadata", pattern: "src.pattern", generic: "src.generic" };
+const SOURCE_HINTS = { metadata: "src.metadataHint", pattern: "src.patternHint", generic: "src.genericHint" };
+
+function cleanNames(p) {
+  return exclusive(async () => {
+    if (lib.busy || !lib.folder) return;
+    const folder = entryAt(p) ? parentOf(p) : p;
+    const picked = await inTurn(() => showClean(p, folder));
+    if (!picked?.length) return;
+    const open = picked.some((c) => c.openNow);
+    const changes = picked.map(({ path, name }) => ({ path, name }));
+    let res;
+    try {
+      res = await withOpenConfirm(open, (confirmOpen) =>
+        change("rename-all", { changes, confirmOpen }, undefined, counted(changes.length, baseName(changes[0].path))));
+    } catch (err) {
+      if (err.code !== "rename_incomplete") throw err;
+      return renamedPart(err, folder);
+    }
+    if (!res) return;
+    const text = changes.length === 1
+      ? fill(t("log.renamed"), { from: baseName(changes[0].path), to: changes[0].name })
+      : fill(t("log.cleaned"), { n: changes.length, to: where(folder) });
+    log(text + warnings(res));
+  });
+}
+
+// showClean opens the preview while the proposals load, and resolves to the
+// rows the user kept, or null when the dialog is cancelled.
+async function showClean(p, folder) {
+  const d = $("clean-dialog");
+  const one = p !== folder;
+  $("clean-title").textContent = fill(t("clean.title"), { where: one ? baseName(p) : where(folder) });
+  $("clean-summary").textContent = "";
+  $("clean-status").textContent = t("clean.reading");
+  $("clean-status").hidden = false;
+  $("clean-wrap").hidden = true;
+  $("clean-keeps").hidden = true;
+  $("clean-rows").replaceChildren();
+  $("clean-all").setAttribute("aria-label", t("clean.all"));
+  $("clean-ok").disabled = true;
+  $("clean-ok").textContent = fill(t("clean.apply"), { n: 0 });
+  d.returnValue = "";
+  d.showModal();
+  d.querySelector("[value=cancel]").focus();
+  const closed = new Promise((resolve) => d.addEventListener("close", resolve, { once: true }));
+
+  let proposals;
+  try {
+    proposals = (await api(`api/library/clean?path=${encodeURIComponent(p)}`)).proposals;
+  } catch (err) {
+    if (d.open) d.close();
+    log(errorText(err, one ? baseName(p) : where(folder)), err.message);
+    return null;
+  }
+  if (!d.open) return null;
+  const changed = proposals.filter((x) => x.changed);
+  $("clean-summary").textContent = fill(t("clean.summary"), { n: changed.length, same: proposals.length - changed.length });
+  if (!changed.length) {
+    $("clean-status").textContent = t("clean.none");
+    await closed;
+    log(fill(t("log.cleanNothing"), { to: one ? baseName(p) : where(folder) }));
+    return null;
+  }
+  $("clean-status").hidden = true;
+  $("clean-wrap").hidden = false;
+  $("clean-keeps").hidden = false;
+  $("clean-rows").replaceChildren(...changed.map(cleanRow));
+  markClean();
+  await closed;
+  if (d.returnValue !== "ok") return null;
+  const picked = [];
+  for (const tr of $("clean-rows").rows) {
+    const x = changed[Number(tr.dataset.row)];
+    const name = tr.querySelector(".name-edit").value.trim();
+    if (tr.querySelector(".pick input").checked && name && name !== x.name) picked.push({ path: x.path, name, openNow: x.openNow });
+  }
+  if (!picked.length) log(t("clean.pick"));
+  return picked;
+}
+
+// cleanRow is one proposal: ticked unless its name is taken.
+function cleanRow(x, i) {
+  const pick = el("input", { type: "checkbox", "aria-label": x.name });
+  pick.checked = !x.taken;
+  const before = el("td", { class: "name clean-before" }, x.name);
+  if (x.openNow) before.append(el("span", { class: "open-now" }, t("openNow")));
+  const after = el("td", { class: "name" },
+    el("input", { class: "name-edit", value: x.proposed, autocomplete: "off", spellcheck: "false", "aria-label": fill(t("clean.afterLabel"), { name: x.name }) }));
+  if (x.taken) after.append(el("div", { class: "clean-note bad" }, fill(t("clean.taken"), { name: x.taken })));
+  const source = el("span", { class: `tag src ${x.source}`, title: t(SOURCE_HINTS[x.source] ?? "") }, t(SOURCES[x.source] ?? ""));
+  return el("tr", { "data-row": i }, el("td", { class: "pick" }, pick), before, after, el("td", {}, source));
+}
+
+// markClean counts the ticked rows into the apply button and the select-all
+// box.
+function markClean() {
+  const boxes = [...$("clean-rows").querySelectorAll(".pick input")];
+  const n = boxes.filter((b) => b.checked).length;
+  for (const b of boxes) b.closest("tr").classList.toggle("off", !b.checked);
+  $("clean-all").checked = n > 0 && n === boxes.length;
+  $("clean-all").indeterminate = n > 0 && n < boxes.length;
+  $("clean-ok").disabled = n === 0;
+  $("clean-ok").textContent = fill(t("clean.apply"), { n });
+}
+
+// renamedPart shows a batch the Device stopped halfway.
+function renamedPart(err, folder) {
+  if (err.data.folder) applyChange(err.data);
+  else {
+    refreshAfterChange();
+    openFolder(lib.path);
+  }
+  log(fill(t("log.cleanPartial"), {
+    renamed: listed((err.data.renamed ?? []).map(baseName)),
+    failed: err.data.failed ? baseName(err.data.failed) : "—",
+    to: where(folder),
+  }), err.message);
+}
+
 // ask shows the confirm dialog and resolves to true when the user confirms.
 // Asks wait their turn: one dialog is on screen at a time, and each answer
 // settles only the ask it was given to.
 let asking = Promise.resolve();
 
 function ask(opts) {
-  const turn = asking.then(() => showDialog(opts));
+  return inTurn(() => showDialog(opts));
+}
+
+function inTurn(show) {
+  const turn = asking.then(show);
   asking = turn.catch(() => {});
   return turn;
 }
@@ -806,6 +938,7 @@ function fillSettings() {
   $("set-port").value = d.port;
   $("set-user").value = d.user;
   $("set-awake").checked = d.keepAwake;
+  $("set-clean").checked = d.cleanUploads;
 }
 
 function renderSettings() {
@@ -833,7 +966,7 @@ function saveSettings() {
     if (!d) return;
     const port = Number($("set-port").value);
     if (!Number.isInteger(port)) return settingsMessage(t("err.badPort"), true);
-    const want = { libraryRoot: $("set-root").value.trim(), port, user: $("set-user").value.trim(), keepAwake: $("set-awake").checked };
+    const want = { libraryRoot: $("set-root").value.trim(), port, user: $("set-user").value.trim(), keepAwake: $("set-awake").checked, cleanUploads: $("set-clean").checked };
     const body = {};
     for (const [k, v] of Object.entries(want)) if (v !== d[k]) body[k] = v;
     if (!Object.keys(body).length) return settingsMessage(t("set.unchanged"), false);
@@ -1076,6 +1209,8 @@ document.addEventListener("click", (e) => {
     case "delete": return remove([...lib.sel]);
     case "delete-one": return remove([b.dataset.path]);
     case "rename": return startRename(b.dataset.path);
+    case "clean": return cleanNames(lib.path);
+    case "clean-one": return cleanNames(b.dataset.path);
     case "upload": return $("upload-input").click();
     case "download": return download(selectedFile());
     case "cancel-upload": return cancelUpload(Number(b.dataset.id));
@@ -1133,7 +1268,7 @@ $("rows").addEventListener("focusout", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if ($("library").hidden || $("dialog").open || e.target.closest("input, textarea, select")) return;
+  if ($("library").hidden || document.querySelector("dialog[open]") || e.target.closest("input, textarea, select")) return;
   // A Mac's delete key sends Backspace; Cmd+Backspace is Finder's delete.
   if (e.key === "Delete" || e.key === "Backspace") {
     e.preventDefault();
@@ -1229,6 +1364,11 @@ async function uploadOne(it) {
   }
   if (it.state !== "checking") return;
   it.book = a.book;
+  if (a.name && a.name !== it.name) {
+    it.original = it.name;
+    it.name = a.name;
+    fillRow(it);
+  }
   if (a.reason) return failItem(it, errorText(new APIError("invalid_name", "", { reason: a.reason })));
   if (!a.fits) return failItem(it, fill(t("up.noSpace"), { size: bytes(it.size), free: bytes(a.freeBytes) }));
   let replace = false;
@@ -1277,8 +1417,8 @@ function send(it, { replace, confirmOpen }) {
         setItem(it, "done");
         if (res.folder?.path === lib.path) applyChange(res);
         else refreshAfterChange();
-        const key = it.replace ? "log.replaced" : "log.uploaded";
-        log(fill(t(key), { name: baseName(res.path ?? it.name), to: where(it.folder) }) + (it.book ? "" : " · " + t("up.notBookHint")) + warnings(res));
+        const key = it.replace ? "log.replaced" : it.original ? "log.uploadedClean" : "log.uploaded";
+        log(fill(t(key), { name: baseName(res.path ?? it.name), from: it.original, to: where(it.folder) }) + (it.book ? "" : " · " + t("up.notBookHint")) + warnings(res));
       } else {
         failItem(it, errorText(new APIError(res.error ?? "internal", res.message ?? "", res)));
       }
@@ -1369,6 +1509,7 @@ function fillRow(it) {
   const name = [it.name, el("span", { class: "dim" }, bytes(it.size))];
   if (it.book === false) name.push(el("span", { class: "tag notbook", title: t("up.notBookHint") }, t("up.notBook")));
   c.name.replaceChildren(...name);
+  c.name.title = it.original ? `${it.original} → ${it.name}` : it.name;
   const pct = it.size ? Math.floor((100 * it.sent) / it.size) : (it.state === "done" ? 100 : 0);
   c.bar.style.width = `${pct}%`;
   c.pct.textContent = `${pct}%`;
@@ -1469,6 +1610,19 @@ $("manual").addEventListener("submit", (e) => {
   e.preventDefault();
   const address = $("manual-address").value.trim();
   if (address) search(address);
+});
+
+$("clean-rows").addEventListener("change", markClean);
+
+$("clean-all").addEventListener("change", (e) => {
+  for (const b of $("clean-rows").querySelectorAll(".pick input")) b.checked = e.target.checked;
+  markClean();
+});
+
+// Enter in a name field would submit the form through its first button,
+// Cancel; it does nothing instead.
+$("clean-dialog").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches(".name-edit")) e.preventDefault();
 });
 
 $("settings-form").addEventListener("submit", (e) => {

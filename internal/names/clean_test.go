@@ -1,6 +1,7 @@
 package names
 
 import (
+	"math/rand/v2"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,15 @@ func TestCleanLeavesCleanNamesAlone(t *testing.T) {
 	}
 }
 
+func TestCleanReadsAnnasArchiveCutAtTheHash(t *testing.T) {
+	runClean(t, []cleanCase{
+		{in: "Unaccustomed Earth -- c4417dd09ccf55a5c17d.epub", want: "Unaccustomed Earth.epub", source: SourcePattern},
+		{in: "Unaccustomed Earth -- Lahiri, Jhumpa -- c4417dd0.epub", want: "Unaccustomed Earth - Jhumpa Lahiri.epub", source: SourcePattern},
+		// Two fields and no hash is not Anna's Archive; the dashes still collapse.
+		{in: "Unaccustomed Earth -- Jhumpa Lahiri.epub", want: "Unaccustomed Earth - Jhumpa Lahiri.epub", source: SourceGeneric},
+	})
+}
+
 func TestCleanNeverInvents(t *testing.T) {
 	for _, name := range []string{"f5c597940cfefa073fb07b2d5b8d0c12.epub", "9788557170612.epub", "(1).pdf"} {
 		if got, _, changed := Clean(name, Metadata{}); changed {
@@ -87,6 +97,30 @@ func TestCleanFitsTheValidator(t *testing.T) {
 	got, _, _ = Clean("x (2).epub", Metadata{Title: "Tabs\tand\x00 nul é", Authors: nil})
 	if got != "Tabs and nul é.epub" {
 		t.Errorf("control characters: %q", got)
+	}
+}
+
+func TestCleanNeverProposesAnInvalidName(t *testing.T) {
+	pieces := []string{"a", "É", " ", "_", ".", "-", " -- ", ":", "?", "*", `"`, "|", "/", `\`, "<", ">", "\t", "(", ")", "[", "]",
+		"’", "''", "2019", "isbn13 9780262560993", "f5c597940cfefa073fb07b2d5b8d0c12", "Anna's Archive", "z-lib.org", "Orwell, George", "名前"}
+	r := rand.New(rand.NewPCG(1, 2))
+	for range 3000 {
+		var b strings.Builder
+		for range 1 + r.IntN(40) {
+			b.WriteString(pieces[r.IntN(len(pieces))])
+		}
+		name := b.String() + []string{".epub", ".PDF", ".fb2.zip", ""}[r.IntN(4)]
+		meta := Metadata{}
+		if r.IntN(2) == 0 {
+			meta = Metadata{Title: b.String(), Authors: []string{b.String()}}
+		}
+		got, _, changed := Clean(name, meta)
+		if changed && Valid(got) != nil {
+			t.Fatalf("Clean(%q) = %q: %v", name, got, Valid(got))
+		}
+		if !changed && got != name {
+			t.Fatalf("Clean(%q) = %q but says unchanged", name, got)
+		}
 	}
 }
 
