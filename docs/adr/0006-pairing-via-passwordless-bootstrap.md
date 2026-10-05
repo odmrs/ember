@@ -21,7 +21,7 @@ handle a blank password as a case of its own (dropbear has a separate switch for
 blank-password logins, `-B`), while KOReader's patch only changes how a password is
 checked; a fixed word keeps ember on the path the patch covers whatever a build does
 with blank ones. This has been checked against the fake Device only and is part of
-the real-Device check of ticket 02.
+the first check on a real Device.
 
 ## Amendment: automatic setup
 
