@@ -81,8 +81,19 @@ func routePairing(mux *http.ServeMux, flow *pairing.Flow) {
 		var req struct {
 			Address     string `json:"address"`
 			Fingerprint string `json:"fingerprint"`
+			// KeyOnly waits in the background for ember's key, copied over
+			// USB, instead of installing it through a passwordless login.
+			KeyOnly bool `json:"keyOnly"`
 		}
 		if !decode(w, r, &req) {
+			return
+		}
+		if req.KeyOnly {
+			if err := flow.ConfirmKeyOnly(req.Address, req.Fingerprint); err != nil {
+				writeError(w, err)
+				return
+			}
+			writeJSONStatus(w, http.StatusAccepted, flow.State())
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), deviceTimeout)

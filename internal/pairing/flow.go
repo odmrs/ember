@@ -37,6 +37,9 @@ const (
 	PhaseScanning Phase = "scanning"
 	PhaseFound    Phase = "found"
 	PhaseLock     Phase = "lock" // key installed, waiting for passwordless login to be switched off
+	// PhaseAwaitKey: the user confirmed a Device and is copying ember's key
+	// to it over USB; ember tries a key-only login until it works.
+	PhaseAwaitKey Phase = "awaiting_key"
 	PhaseDone     Phase = "done"
 )
 
@@ -44,7 +47,18 @@ const (
 type State struct {
 	Phase      Phase       `json:"phase"`
 	Candidates []Candidate `json:"candidates"`
+	// Address is the Device being waited for in PhaseAwaitKey.
+	Address string `json:"address,omitempty"`
+	// Error says why a wait for the key ended without pairing:
+	// "key_wait_timeout" or "host_key_mismatch".
+	Error string `json:"error,omitempty"`
 }
+
+// Why a wait for the key ended.
+const (
+	KeyWaitTimeout  = "key_wait_timeout"
+	KeyWaitMismatch = "host_key_mismatch"
+)
 
 // Config wires a Flow.
 type Config struct {
@@ -57,6 +71,9 @@ type Config struct {
 	LookupHost func(ctx context.Context, host string) ([]string, error)
 	// Probe inspects the "host:port" targets of a search. Nil means Find.
 	Probe func(ctx context.Context, targets []string) []Candidate
+	// KeyPoll is how often a wait for the key tries a key-only login, and
+	// KeyWait how long it keeps trying; 2s and 15 minutes when zero.
+	KeyPoll, KeyWait time.Duration
 }
 
 // Flow runs pairing for the dashboard: search, confirm, lock. It is safe for
@@ -80,6 +97,12 @@ func NewFlow(cfg Config) *Flow {
 	}
 	if cfg.Probe == nil {
 		cfg.Probe = Find
+	}
+	if cfg.KeyPoll == 0 {
+		cfg.KeyPoll = 2 * time.Second
+	}
+	if cfg.KeyWait == 0 {
+		cfg.KeyWait = 15 * time.Minute
 	}
 	return &Flow{cfg: cfg, state: State{Phase: PhaseIdle, Candidates: []Candidate{}}}
 }
@@ -296,6 +319,106 @@ func (f *Flow) Confirm(ctx context.Context, address, fingerprint string) (profil
 	f.state = State{Phase: PhaseLock, Candidates: []Candidate{}}
 	f.mu.Unlock()
 	return p, nil
+}
+
+// ConfirmKeyOnly pairs with the candidate the user picked, like Confirm, but
+// for a user who copies ember's key over USB and never opens the
+// passwordless window. It returns at once; in the background ember tries a
+// key-only login to that address alone, every KeyPoll, until the Device
+// accepts the key. Then it surveys the Device over that login, saves the
+// Profile and moves to PhaseDone. A new Scan or Forget stops the wait; after
+// KeyWait, or if another host answers at the address, the flow goes back to
+// PhaseFound with Error set. No password is ever sent.
+func (f *Flow) ConfirmKeyOnly(address, fingerprint string) error {
+	if _, err := f.cfg.Store.Load(); err == nil {
+		return ErrAlreadyPaired
+	}
+	c, ok := f.candidate(address, fingerprint)
+	if !ok {
+		return ErrUnknownDevice
+	}
+	hostKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(c.HostKey))
+	if err != nil {
+		return ErrUnknownDevice
+	}
+	signer, err := f.cfg.Store.Signer()
+	if err != nil {
+		return err
+	}
+	host, portStr, _ := net.SplitHostPort(c.Addr)
+	port, _ := strconv.Atoi(portStr)
+	p := profile.New(host, port)
+	p.HostKey = c.HostKey
+	keyLogin := device.Config{Addr: c.Addr, User: p.User, HostKey: hostKey, Signer: signer, Timeout: handshakeWait}
+
+	ctx, cancel := context.WithTimeout(context.Background(), f.cfg.KeyWait)
+	f.mu.Lock()
+	if f.cancelScan != nil {
+		f.cancelScan()
+	}
+	f.scanID++
+	id := f.scanID
+	f.cancelScan = cancel
+	candidates := f.state.Candidates
+	f.state = State{Phase: PhaseAwaitKey, Candidates: candidates, Address: c.Addr}
+	f.mu.Unlock()
+
+	go func() {
+		defer cancel()
+		var failure string
+		for {
+			d, err := device.Dial(ctx, keyLogin)
+			if err == nil {
+				err = f.finishKeyOnly(ctx, d, p, id)
+				if err == nil {
+					return
+				}
+			}
+			var mismatch *device.HostKeyMismatchError
+			if errors.As(err, &mismatch) {
+				failure = KeyWaitMismatch
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(f.cfg.KeyPoll):
+				continue
+			}
+			failure = KeyWaitTimeout
+			break
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if id == f.scanID {
+			f.state = State{Phase: PhaseFound, Candidates: candidates, Error: failure}
+		}
+	}()
+	return nil
+}
+
+// finishKeyOnly surveys the Device over the key login that just worked,
+// saves the Profile and ends the flow, unless the wait was called off
+// meanwhile.
+func (f *Flow) finishKeyOnly(ctx context.Context, d *device.Device, p profile.Profile, id int) error {
+	s, err := Survey(d, p.LibraryRoot)
+	d.Close()
+	if err != nil {
+		return err
+	}
+	p.Survey = s
+	p.PairedAt = time.Now().UTC().Truncate(time.Second)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id != f.scanID || ctx.Err() != nil {
+		return nil
+	}
+	if err := f.cfg.Store.Save(p); err != nil {
+		return err
+	}
+	f.scanID++
+	f.cancelScan = nil
+	f.state = State{Phase: PhaseDone, Candidates: []Candidate{}}
+	return nil
 }
 
 func installOverPasswordless(ctx context.Context, keyLogin device.Config, libraryRoot string) (profile.Survey, error) {

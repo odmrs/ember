@@ -86,6 +86,38 @@ func TestPairingOverTheAPI(t *testing.T) {
 	}
 }
 
+// The USB route over the API: confirm with keyOnly, copy the key, and the
+// pairing state turns done on its own.
+func TestKeyOnlyPairingOverTheAPI(t *testing.T) {
+	fake := fakedevice.New(t)
+	flow, _ := newFlow(t)
+	h := New(self, "test", flow, idleConnector(t))
+	post(t, h, "/api/pair/scan", `{"address":"`+fake.Addr()+`"}`)
+	var state pairing.State
+	for deadline := time.Now().Add(10 * time.Second); state.Phase != pairing.PhaseFound; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("scan did not finish")
+		}
+		state = decodeBody[pairing.State](t, get(t, h, "/api/pair"))
+	}
+	c := state.Candidates[0]
+	rec := post(t, h, "/api/pair/confirm", `{"address":"`+c.Addr+`","fingerprint":"`+c.Fingerprint+`","keyOnly":true}`)
+	if s := decodeBody[pairing.State](t, rec); rec.Code != http.StatusAccepted || s.Phase != pairing.PhaseAwaitKey || s.Address != c.Addr {
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body)
+	}
+	pub := decodeBody[map[string]string](t, post(t, h, "/api/pair/key", `{}`))["publicKey"]
+	fake.WriteFile(t, fakedevice.AuthorizedKeys, pub+"\n")
+	for deadline := time.Now().Add(10 * time.Second); state.Phase != pairing.PhaseDone; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("never paired: %+v", state)
+		}
+		state = decodeBody[pairing.State](t, get(t, h, "/api/pair"))
+	}
+	if st := decodeBody[map[string]any](t, get(t, h, "/api/status")); st["state"] != "paired" {
+		t.Fatalf("status = %v", st)
+	}
+}
+
 func TestPublicKeyOnly(t *testing.T) {
 	flow, _ := newFlow(t)
 	h := New(self, "test", flow, idleConnector(t))

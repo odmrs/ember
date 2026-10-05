@@ -354,6 +354,94 @@ func TestPairingWithKeyCopiedOverUSB(t *testing.T) {
 	}
 }
 
+// waitPhase polls the flow until it reaches phase.
+func waitPhase(t *testing.T, f *Flow, phase Phase) State {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if s := f.State(); s.Phase == phase {
+			return s
+		}
+	}
+	t.Fatalf("never reached %s; state %+v", phase, f.State())
+	return State{}
+}
+
+// The USB route when the user confirms before the key is on the Device:
+// ember keeps trying a key-only login and pairs as soon as the key is
+// there. It never logs in with a password meanwhile, even though this
+// Device would let it.
+func TestKeyOnlyPairingWaitsForTheKey(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	f, store := newFlow(t)
+	f.cfg.KeyPoll = 10 * time.Millisecond
+
+	c := scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.State(); s.Phase != PhaseAwaitKey || s.Address != c.Addr {
+		t.Fatalf("state = %+v", s)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if s := f.State(); s.Phase != PhaseAwaitKey {
+		t.Fatalf("paired without the key: %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("profile saved before the key was there")
+	}
+	if got := fake.ReadFile(t, fakedevice.AuthorizedKeys); got != "" {
+		t.Fatalf("ember wrote to the Device: %q", got)
+	}
+
+	pub, err := f.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.WriteFile(t, fakedevice.AuthorizedKeys, pub+"\n")
+	waitPhase(t, f, PhaseDone)
+	p, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HostPort() != c.Addr || p.HostKey != c.HostKey || !p.Survey.LibraryExists {
+		t.Fatalf("profile = %+v", p)
+	}
+}
+
+func TestKeyOnlyPairingGivesUp(t *testing.T) {
+	fake := fakedevice.New(t)
+	f, store := newFlow(t)
+	f.cfg.KeyPoll, f.cfg.KeyWait = 10*time.Millisecond, 100*time.Millisecond
+	c := scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	s := waitPhase(t, f, PhaseFound)
+	if s.Error != KeyWaitTimeout || len(s.Candidates) != 1 {
+		t.Fatalf("state = %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("profile saved")
+	}
+
+	// A new search calls off a wait in progress.
+	f.cfg.KeyWait = time.Minute
+	c = scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	scan(t, f, fake.Addr())
+	pub, _ := f.PublicKey()
+	fake.WriteFile(t, fakedevice.AuthorizedKeys, pub+"\n")
+	time.Sleep(100 * time.Millisecond)
+	if s := f.State(); s.Phase != PhaseFound {
+		t.Fatalf("the called-off wait went on: %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("the called-off wait paired")
+	}
+}
+
 func TestLaterConnectWithWrongHostKeyIsAnError(t *testing.T) {
 	fake := fakedevice.New(t)
 	impostor := fakedevice.New(t, fakedevice.WithHostKeySeed(9))
