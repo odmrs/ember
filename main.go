@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/odmrs/ember/internal/browser"
+	"github.com/odmrs/ember/internal/pairing"
+	"github.com/odmrs/ember/internal/profile"
 	"github.com/odmrs/ember/internal/server"
 )
 
@@ -25,22 +27,36 @@ var version = "0.1.0-dev"
 func main() {
 	port := flag.Int("port", 8737, "local port for the dashboard (0 picks a free one)")
 	noOpen := flag.Bool("no-open", false, "do not open the browser on start")
+	configDir := flag.String("config", "", "profile directory (default: ember in the user config dir)")
 	flag.Parse()
 
-	if err := run(*port, !*noOpen); err != nil {
+	if err := run(*port, !*noOpen, *configDir); err != nil {
 		fmt.Fprintln(os.Stderr, "ember:", err)
 		os.Exit(1)
 	}
 }
 
-func run(port int, open bool) error {
+func run(port int, open bool, configDir string) error {
+	if configDir == "" {
+		dir, err := profile.DefaultDir()
+		if err != nil {
+			return fmt.Errorf("cannot find the user config dir: %w", err)
+		}
+		configDir = dir
+	}
+	store, err := profile.Open(configDir)
+	if err != nil {
+		return err
+	}
+	flow := pairing.NewFlow(pairing.Config{Store: store})
+
 	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		return fmt.Errorf("cannot listen on 127.0.0.1:%d (already running? try -port 0): %w", port, err)
 	}
 	hostport := ln.Addr().String()
 	srv := &http.Server{
-		Handler:           server.New(hostport, version),
+		Handler:           server.New(hostport, version, flow),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

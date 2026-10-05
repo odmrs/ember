@@ -21,7 +21,74 @@
     </nav>
   </header>
 
-  <section class="box hero">
+  <section class="box pair" id="pair" hidden>
+    <div class="head"><span class="label" data-i18n="pair.title"></span><span class="dim" id="pair-stage"></span></div>
+
+    <div class="pane" data-view="start">
+      <p data-i18n="pair.intro"></p>
+      <ol class="steps">
+        <li data-i18n="pair.step1"></li>
+        <li data-i18n="pair.step2"></li>
+        <li data-i18n="pair.step3"></li>
+        <li data-i18n="pair.step4"></li>
+      </ol>
+      <p class="dim" data-i18n="pair.why"></p>
+      <div class="actions"><button type="button" class="primary" data-action="search" data-i18n="pair.search"></button></div>
+    </div>
+
+    <div class="pane" data-view="scanning">
+      <div class="label blink" data-i18n="pair.scanning"></div>
+      <p class="dim" data-i18n="pair.scanningBody"></p>
+    </div>
+
+    <div class="pane" data-view="found">
+      <p id="found-intro"></p>
+      <ul class="candidates" id="candidates"></ul>
+      <div class="actions"><button type="button" class="secondary" data-action="search" data-i18n="pair.searchAgain"></button></div>
+    </div>
+
+    <div class="pane" data-view="installing">
+      <div class="label blink" data-i18n="pair.installing"></div>
+      <ol class="steps">
+        <li data-i18n="pair.installSurvey"></li>
+        <li data-i18n="pair.installKey"></li>
+        <li data-i18n="pair.installVerify"></li>
+      </ol>
+    </div>
+
+    <div class="pane" data-view="lock">
+      <p data-i18n="pair.lockIntro"></p>
+      <ol class="steps">
+        <li data-i18n="pair.lock1"></li>
+        <li data-i18n="pair.lock2"></li>
+      </ol>
+      <div class="lock" id="lock"><span class="dot"></span><span id="lock-text"></span></div>
+      <div class="actions"><button type="button" class="primary" data-action="finish" id="finish" hidden data-i18n="pair.finish"></button></div>
+    </div>
+
+    <div class="error" id="pair-error" hidden></div>
+
+    <div class="extra" id="pair-extra">
+      <form class="manual" id="manual">
+        <label class="label" for="manual-address" data-i18n="pair.manual"></label>
+        <input id="manual-address" autocomplete="off" spellcheck="false">
+        <button type="submit" class="secondary" data-i18n="pair.connect"></button>
+      </form>
+      <details id="usb">
+        <summary class="label" data-i18n="pair.usb"></summary>
+        <p class="dim" data-i18n="pair.usbBody"></p>
+        <ol class="steps">
+          <li data-i18n="pair.usb1"></li>
+          <li data-i18n="pair.usb2"></li>
+          <li data-i18n="pair.usb3"></li>
+        </ol>
+        <pre class="pubkey" id="pubkey"></pre>
+        <div class="actions"><button type="button" class="secondary" data-action="copy" data-i18n="pair.copy"></button></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="box hero" id="hero">
     <span class="path" id="path">—</span>
     <span class="tag">KOREADER</span>
     <span class="big" id="book-count">0</span>
@@ -32,7 +99,7 @@
     </span>
   </section>
 
-  <main class="main">
+  <main class="main" id="library">
     <section class="box">
       <div class="head"><span class="label" data-i18n="library"></span></div>
       <div class="tree" id="tree"></div>
@@ -48,8 +115,8 @@
         </div>
       </div>
       <div class="empty" id="empty">
-        <div class="label" data-i18n="unpairedTitle"></div>
-        <p class="dim" data-i18n="unpairedBody"></p>
+        <div class="label" data-i18n="pairedTitle"></div>
+        <p class="dim" data-i18n="pairedBody"></p>
       </div>
     </section>
   </main>

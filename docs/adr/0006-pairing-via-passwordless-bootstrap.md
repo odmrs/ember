@@ -15,3 +15,16 @@ stating the risk (root for anyone on the LAN while the SSH server is up) and onl
 takes effect after the user confirms. In this mode ember authenticates with an empty
 password instead of its key, still enforces the pinned host key, and the dashboard
 keeps a visible warning banner until the mode is turned off.
+
+## Amendment: automatic setup
+
+The passwordless window is also used to survey the Device (KOReader version,
+home folder, metadata mode, open book, free space) and to find it on the LAN by its
+dropbear banner, so the user never types an address. The single required user action
+is confirming the host key fingerprint of the found Device; no write happens before
+it. After the key is installed, ember detects when the user has switched
+passwordless login off.
+
+Discovery logs into each dropbear host on the LAN with the passwordless login
+read-only, so the candidate list can show what each device is before the user picks
+one. ember's key is not offered and nothing is written until the confirmation.
