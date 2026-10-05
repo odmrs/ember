@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -387,4 +388,26 @@ func TestLeftoverPartsAreCleanedOnLink(t *testing.T) {
 	waitFor(t, "the next link", func() bool {
 		return get(t, h, "/api/library/folder?path=").Code == http.StatusOK && !onDisk(t, fake, doc+"/Again.epub.part")
 	})
+}
+
+// Two uploads racing for one name: one lands whole, the other is refused.
+func TestUploadsDoNotRace(t *testing.T) {
+	fake, h := opLibrary(t)
+	for i := range 10 {
+		name := fmt.Sprintf("same%d.epub", i)
+		bodies := []string{strings.Repeat("a", 300<<10), strings.Repeat("b", 300<<10)}
+		codes := make(chan int, 2)
+		for _, body := range bodies {
+			go func() { codes <- upload(h, "folder=&name="+name, body).Code }()
+		}
+		if got := <-codes + <-codes; got != http.StatusOK+http.StatusConflict {
+			t.Fatalf("round %d: codes sum %d", i, got)
+		}
+		if got := fake.ReadFile(t, fakedevice.Documents+"/"+name); got != bodies[0] && got != bodies[1] {
+			t.Fatalf("round %d: the file mixes both uploads", i)
+		}
+		if onDisk(t, fake, fakedevice.Documents+"/"+name+".part") {
+			t.Fatalf("round %d: a part was left", i)
+		}
+	}
 }
