@@ -114,6 +114,9 @@ func TestEveryServerCodeHasAMessage(t *testing.T) {
 			t.Errorf("no message for keep-awake state %q", a)
 		}
 	}
+	if _, ok := en["state."+string(connector.ReasonDisconnected)]; !ok {
+		t.Errorf("no message for wait reason %q", connector.ReasonDisconnected)
+	}
 	for _, w := range []string{library.WarnSidecarShared, library.WarnSidecarLeft, library.WarnReplacedLeft} {
 		if _, ok := en["warn."+w]; !ok {
 			t.Errorf("no message for warning %q", w)
@@ -235,5 +238,72 @@ func TestRetiredKeysAreGone(t *testing.T) {
 func TestDefaultRootIsNamedOnce(t *testing.T) {
 	if n := strings.Count(read(t, "app.js"), "/mnt/us/documents"); n != 1 {
 		t.Errorf("app.js spells the default library root %d times, want 1", n)
+	}
+}
+
+// The theme must be on <html> before the page paints, and the CSP allows no
+// inline script or style, so a blocking script file in <head> sets it.
+func TestThemeIsSetBeforeFirstPaint(t *testing.T) {
+	html := read(t, "index.html")
+	head, _, ok := strings.Cut(html, "</head>")
+	if !ok {
+		t.Fatal("index.html has no </head>")
+	}
+	if !strings.Contains(head, `<script src="theme.js"></script>`) {
+		t.Error(`<head> must load theme.js without defer or async`)
+	}
+	if strings.Index(head, "theme.js") > strings.Index(head, "app.js") {
+		t.Error("theme.js must load before app.js")
+	}
+	read(t, "theme.js")
+	en := catalog(t, "en")
+	for _, mode := range []string{"auto", "light", "dark"} {
+		for _, key := range []string{"theme." + mode, "theme." + mode + "Hint"} {
+			if _, ok := en[key]; !ok {
+				t.Errorf("no message %q for the theme button", key)
+			}
+		}
+	}
+	if regexp.MustCompile(`<script(\s[^>]*)?>[^<]`).MatchString(html) || !regexp.MustCompile(`<script[^>]*\ssrc=`).MatchString(html) {
+		t.Error("index.html has an inline script")
+	}
+	if regexp.MustCompile(`(?i)<style|\sstyle=`).MatchString(html) {
+		t.Error("index.html has inline style")
+	}
+}
+
+// Colours live only in the theme tokens, and both themes define every token.
+func TestColoursAreThemeTokens(t *testing.T) {
+	css := read(t, "app.css")
+	colour := regexp.MustCompile(`#[0-9a-fA-F]{3,8}\b|rgba?\(`)
+	token := regexp.MustCompile(`^\s*--[\w-]+:`)
+	for i, line := range strings.Split(css, "\n") {
+		if colour.MatchString(line) && !token.MatchString(line) {
+			t.Errorf("app.css:%d: colour outside a token: %s", i+1, strings.TrimSpace(line))
+		}
+	}
+	blocks := map[string]map[string]bool{}
+	block := regexp.MustCompile(`(?s)(:root(?:\[data-theme="light"\])?) \{(.*?)\}`)
+	name := regexp.MustCompile(`--([\w-]+):`)
+	for _, b := range block.FindAllStringSubmatch(css, -1) {
+		set := map[string]bool{}
+		for _, n := range name.FindAllStringSubmatch(b[2], -1) {
+			set[n[1]] = true
+		}
+		blocks[b[1]] = set
+	}
+	dark, light := blocks[":root"], blocks[`:root[data-theme="light"]`]
+	if len(dark) == 0 || len(light) == 0 {
+		t.Fatalf("theme blocks not found: %v", blocks)
+	}
+	for n := range dark {
+		if n != "mono" && !light[n] {
+			t.Errorf("light theme lacks --%s", n)
+		}
+	}
+	for n := range light {
+		if !dark[n] {
+			t.Errorf("light theme defines --%s, unknown to the dark one", n)
+		}
 	}
 }

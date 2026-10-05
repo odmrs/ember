@@ -198,6 +198,8 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusBadRequest, "root_outside", err.Error())
 	case errors.Is(err, connector.ErrNotLinked):
 		writeErrorCode(w, http.StatusServiceUnavailable, "not_linked", err.Error())
+	case errors.Is(err, connector.ErrStopFailed):
+		writeErrorCode(w, http.StatusBadGateway, "stop_failed", err.Error())
 	case errors.Is(err, errNoPaths):
 		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
 	case errors.As(err, &noSpace):

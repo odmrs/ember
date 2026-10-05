@@ -41,6 +41,23 @@ func newHandler(hostport, version string, flow *pairing.Flow, conn *connector.Co
 	})
 	routePairing(mux, flow)
 	a := newAccess(flow, conn)
+	mux.HandleFunc("POST /api/connect/disconnect", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			StopServer bool `json:"stopServer"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		// A write in progress finishes on the Device before the link goes.
+		a.mu.Lock()
+		err := conn.Disconnect(req.StopServer)
+		a.mu.Unlock()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"stopped": req.StopServer})
+	})
 	routeLibrary(mux, a)
 	routeSettings(mux, a, &confirmGate{now: now})
 	return guard(hostport, mux)
