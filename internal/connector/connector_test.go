@@ -222,6 +222,19 @@ func TestScanIgnoresAnImpostor(t *testing.T) {
 	}
 }
 
+func TestNetworkSweepsAreSpacedOut(t *testing.T) {
+	fake := fakedevice.New(t)
+	saved := closedPort(t)
+	r := newRig(t, fake, saved)
+	c := r.connector(nil, fast)
+
+	states := session(t, c)
+	waitFor(t, states, "17 attempts", func(State) bool { return r.dials.Load() >= 17 })
+	if n := r.scans.Load(); n < 2 || n > 3 {
+		t.Fatalf("%d sweeps over 17 attempts, want one every %d attempts", n, scanEveryAttempts)
+	}
+}
+
 func TestHostKeyMismatchIsReported(t *testing.T) {
 	fake := fakedevice.New(t)
 	impostor := fakedevice.New(t, fakedevice.WithHostKeySeed(9), fakedevice.Passwordless())

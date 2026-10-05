@@ -28,6 +28,7 @@ const (
 	KeepaliveInterval = 5 * time.Second
 	dialTimeout       = 5 * time.Second
 	scanTimeout       = 30 * time.Second
+	scanEveryAttempts = 8 // with RetryInterval, a network sweep at most every ~16s
 )
 
 // ErrNotLinked is returned by Device while no link is up.
@@ -259,7 +260,7 @@ func (c *Connector) run(ctx context.Context) {
 		return scan.results
 	}
 
-	attempt := 0
+	attempt, lastScan := 0, 0
 	var failure Failure
 	var profileErr string
 	for ctx.Err() == nil {
@@ -273,7 +274,7 @@ func (c *Connector) run(ctx context.Context) {
 			}
 			profileErr = err.Error()
 			stopScan()
-			attempt, failure = 0, ""
+			attempt, lastScan, failure = 0, 0, ""
 			c.publish(State{Phase: PhaseUnpaired}, nil)
 		} else {
 			profileErr = ""
@@ -284,15 +285,19 @@ func (c *Connector) run(ctx context.Context) {
 			case err == nil:
 				stopScan()
 				c.link(ctx, d, cfg.Addr)
-				attempt, failure = 0, ""
+				attempt, lastScan, failure = 0, 0, ""
 			case ctx.Err() != nil:
 				return
 			default:
 				failure = classify(err)
 				// A refused login means the Device is right there; searching
 				// elsewhere cannot help.
-				if scan == nil && failure != FailAuthRejected {
+				// The first failure searches at once; after that the saved
+				// address keeps its 2s cadence while full sweeps of the network
+				// are spaced out so the LAN is not flooded.
+				if scan == nil && failure != FailAuthRejected && (lastScan == 0 || attempt-lastScan >= scanEveryAttempts) {
 					scan = c.startSearch(ctx, cfg, p.Port)
+					lastScan = attempt
 				}
 				c.publish(State{Phase: PhaseSearching, Attempt: attempt, Address: cfg.Addr, Failure: failure, Scanning: scan != nil}, nil)
 			}
@@ -314,7 +319,7 @@ func (c *Connector) run(ctx context.Context) {
 				}
 				c.moveTo(f.addr)
 				c.link(ctx, f.dev, f.addr)
-				attempt, failure = 0, ""
+				attempt, lastScan, failure = 0, 0, ""
 			}
 		}
 	}
