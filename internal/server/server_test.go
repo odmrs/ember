@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/odmrs/ember/internal/connector"
 	"github.com/odmrs/ember/internal/pairing"
 	"github.com/odmrs/ember/internal/profile"
 )
@@ -24,10 +25,22 @@ func newFlow(t *testing.T) (*pairing.Flow, *profile.Store) {
 	return pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), store
 }
 
+// idleConnector has nothing paired and never scans the real network.
+func idleConnector(t *testing.T) *connector.Connector {
+	t.Helper()
+	store, err := profile.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := connector.New(connector.Config{Store: store, Targets: func([]int) ([]string, error) { return nil, nil }})
+	t.Cleanup(c.Close)
+	return c
+}
+
 func do(t *testing.T, method, path, host, origin string, headers ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	flow, _ := newFlow(t)
-	return call(New(self, "test", flow), method, path, host, origin, "", headers...)
+	return call(New(self, "test", flow, idleConnector(t)), method, path, host, origin, "", headers...)
 }
 
 func call(h http.Handler, method, path, host, origin, body string, headers ...string) *httptest.ResponseRecorder {
@@ -126,7 +139,7 @@ func TestRefusesNonLoopbackAddress(t *testing.T) {
 				}
 			}()
 			flow, _ := newFlow(t)
-			New(addr, "test", flow)
+			New(addr, "test", flow, idleConnector(t))
 		}()
 	}
 }

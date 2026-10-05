@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/odmrs/ember/internal/browser"
+	"github.com/odmrs/ember/internal/connector"
 	"github.com/odmrs/ember/internal/pairing"
 	"github.com/odmrs/ember/internal/profile"
 	"github.com/odmrs/ember/internal/server"
@@ -49,6 +50,8 @@ func run(port int, open bool, configDir string) error {
 		return err
 	}
 	flow := pairing.NewFlow(pairing.Config{Store: store})
+	conn := connector.New(connector.Config{Store: store})
+	defer conn.Close()
 
 	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
@@ -56,9 +59,12 @@ func run(port int, open bool, configDir string) error {
 	}
 	hostport := ln.Addr().String()
 	srv := &http.Server{
-		Handler:           server.New(hostport, version, flow),
+		Handler:           server.New(hostport, version, flow, conn),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Open event streams never go idle; ending the Sessions lets Shutdown
+	// finish.
+	srv.RegisterOnShutdown(conn.Close)
 
 	url := "http://" + hostport + "/"
 	log.Printf("ember %s running at %s (Ctrl+C to stop)", version, url)

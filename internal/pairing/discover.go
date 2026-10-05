@@ -94,6 +94,25 @@ func subnetTargets(addrs []net.Addr, ports []int) []string {
 // key of each match and, if passwordless login is open, surveys it. Nothing
 // is written to any host.
 func Find(ctx context.Context, targets []string) []Candidate {
+	var found []Candidate
+	for _, h := range FindDropbear(ctx, targets) {
+		if ctx.Err() == nil {
+			found = append(found, inspect(ctx, h.Addr, h.Banner))
+		}
+	}
+	return found
+}
+
+// Host is a target that answered with a dropbear SSH banner.
+type Host struct {
+	Addr   string // "host:port"
+	Banner string
+}
+
+// FindDropbear probes every target concurrently and returns, in target
+// order, those that answer with a dropbear SSH banner. It only reads the
+// banner: no key exchange, no login.
+func FindDropbear(ctx context.Context, targets []string) []Host {
 	banners := make([]string, len(targets))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -117,13 +136,13 @@ func Find(ctx context.Context, targets []string) []Candidate {
 	close(jobs)
 	wg.Wait()
 
-	var found []Candidate
+	var hosts []Host
 	for i, b := range banners {
-		if b != "" && ctx.Err() == nil {
-			found = append(found, inspect(ctx, targets[i], b))
+		if b != "" {
+			hosts = append(hosts, Host{Addr: targets[i], Banner: b})
 		}
 	}
-	return found
+	return hosts
 }
 
 func isDropbear(banner string) bool {

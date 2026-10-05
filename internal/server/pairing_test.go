@@ -42,7 +42,7 @@ type apiError struct{ Error, Message string }
 func TestPairingOverTheAPI(t *testing.T) {
 	fake := fakedevice.New(t, fakedevice.Passwordless())
 	flow, _ := newFlow(t)
-	h := New(self, "test", flow)
+	h := New(self, "test", flow, idleConnector(t))
 
 	if rec := post(t, h, "/api/pair/scan", `{"address":"`+fake.Addr()+`"}`); rec.Code != http.StatusAccepted {
 		t.Fatalf("scan: %d %s", rec.Code, rec.Body)
@@ -88,7 +88,7 @@ func TestPairingOverTheAPI(t *testing.T) {
 
 func TestPublicKeyOnly(t *testing.T) {
 	flow, _ := newFlow(t)
-	h := New(self, "test", flow)
+	h := New(self, "test", flow, idleConnector(t))
 	rec := post(t, h, "/api/pair/key", `{}`)
 	body := rec.Body.String()
 	if rec.Code != http.StatusOK || !strings.Contains(body, `"publicKey":"ssh-ed25519 `) {
@@ -111,7 +111,7 @@ func TestStatusNeverLeaksThePrivateKey(t *testing.T) {
 	if err := store.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	body := get(t, New(self, "test", flow), "/api/status").Body.String()
+	body := get(t, New(self, "test", flow, idleConnector(t)), "/api/status").Body.String()
 	if !strings.Contains(body, `"state":"paired"`) || strings.Contains(body, "PRIVATE") || strings.Contains(body, "hostKey") {
 		t.Fatalf("status = %s", body)
 	}
@@ -128,7 +128,7 @@ func TestHostKeyMismatchIsReported(t *testing.T) {
 	if err := store.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	rec := post(t, New(self, "test", flow), "/api/pair/lock", `{}`)
+	rec := post(t, New(self, "test", flow, idleConnector(t)), "/api/pair/lock", `{}`)
 	if e := decodeBody[apiError](t, rec); rec.Code != http.StatusConflict || e.Error != "host_key_mismatch" {
 		t.Fatalf("lock: %d %+v", rec.Code, e)
 	}
@@ -136,7 +136,7 @@ func TestHostKeyMismatchIsReported(t *testing.T) {
 
 func TestPairingRequestsNeedJSON(t *testing.T) {
 	flow, _ := newFlow(t)
-	h := New(self, "test", flow)
+	h := New(self, "test", flow, idleConnector(t))
 	for _, ct := range []string{"", "text/plain", "application/x-www-form-urlencoded"} {
 		rec := call(h, "POST", "/api/pair/scan", self, origin, `{}`, "Content-Type", ct)
 		if rec.Code != http.StatusUnsupportedMediaType {

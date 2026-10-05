@@ -187,3 +187,29 @@ func TestDialTimesOut(t *testing.T) {
 		t.Fatalf("err = %v after %v", err, time.Since(start))
 	}
 }
+
+func TestPingAndWaitFollowTheConnection(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	d := dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+	if err := d.Ping(); err != nil {
+		t.Fatalf("Ping on a live link: %v", err)
+	}
+
+	waited := make(chan struct{})
+	go func() {
+		d.Wait()
+		close(waited)
+	}()
+	fake.Stop()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return after the Device went away")
+	}
+	if err := d.Ping(); err == nil {
+		t.Fatal("Ping succeeded on a closed link")
+	}
+
+	fake.Start()
+	dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+}

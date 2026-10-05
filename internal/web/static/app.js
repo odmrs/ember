@@ -45,7 +45,15 @@ async function setLang(lang) {
 
 const status = { version: "", state: "unpaired", device: null };
 const pairing = { view: "start", candidates: [], error: null, locked: false };
-const STATE_LABEL = { unpaired: "state.unpaired", paired: "state.paired", searching: "state.searching", linked: "state.linked" };
+// conn mirrors the Connector, pushed by the server over /api/events.
+const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false };
+const STATE_LABEL = { unpaired: "state.unpaired", searching: "state.searching", linked: "state.linked", offline: "state.offline" };
+const FAILURES = {
+  unreachable: "conn.unreachable",
+  port_closed: "conn.portClosed",
+  host_key_mismatch: "conn.hostKeyMismatch",
+  auth_rejected: "conn.authRejected",
+};
 const ERRORS = {
   host_key_mismatch: "err.hostKeyMismatch",
   key_not_accepted: "err.keyNotAccepted",
@@ -81,24 +89,53 @@ function pairingActive() {
   return status.state === "unpaired" || pairing.view === "lock";
 }
 
+function linkState() {
+  if (pairing.view === "scanning") return "searching";
+  if (status.state === "unpaired") return "unpaired";
+  if (!conn.online) return "offline";
+  return conn.phase === "linked" ? "linked" : "searching";
+}
+
 function render() {
-  const linkState = pairing.view === "scanning" ? "searching" : status.state;
-  $("link").dataset.state = linkState;
-  $("link-text").textContent = t(STATE_LABEL[linkState]);
+  const state = linkState();
+  $("link").dataset.state = state;
+  let label = t(STATE_LABEL[state]);
+  if (state === "searching" && pairing.view !== "scanning" && conn.attempt) label += ` #${conn.attempt}`;
+  $("link-text").textContent = label;
   if (status.version) $("version-line").textContent = `ember ${status.version} · ${location.host}`;
 
   const active = pairingActive();
+  const connecting = !active && conn.phase !== "linked";
   $("pair").hidden = !active;
   $("hero").hidden = active;
-  $("library").hidden = active;
+  $("connect").hidden = !connecting;
+  $("library").hidden = active || connecting;
   if (active) renderPairing();
+  if (connecting) renderConnecting();
 
   const d = status.device;
   if (d) {
+    const address = conn.phase === "linked" ? conn.address : `${d.address}:${d.port}`;
     $("path").textContent = d.libraryRoot;
     $("free").textContent = bytes(d.survey.freeBytes);
-    $("device-line").textContent = `${d.user}@${d.address}:${d.port} · ${d.fingerprint}`;
+    $("device-line").textContent = `${d.user}@${address} · ${d.fingerprint}`;
   }
+}
+
+function renderConnecting() {
+  const d = status.device;
+  const address = conn.address || (d ? `${d.address}:${d.port}` : "—");
+  $("conn-attempt").textContent = `#${conn.attempt}`;
+  $("conn-line").textContent = `${address} · ${t("conn.retry")}`;
+  $("conn-scan").hidden = !conn.scanning;
+
+  const fail = $("conn-fail");
+  fail.hidden = !conn.failure;
+  fail.dataset.kind = conn.failure;
+  $("conn-warning").hidden = conn.failure !== "host_key_mismatch";
+  let key = FAILURES[conn.failure] ?? "conn.unreachable";
+  if (conn.failure === "auth_rejected" && d?.passwordless) key = "conn.authRejectedPasswordless";
+  $("conn-fail-text").textContent = t(key);
 }
 
 function renderPairing() {
@@ -264,6 +301,23 @@ $("usb").addEventListener("toggle", (e) => {
   if (e.target.open) showPublicKey();
 });
 
+// Keeping this stream open is what keeps the Connector running; the browser
+// reconnects it on its own if ember restarts.
+function listen() {
+  const events = new EventSource("api/events");
+  events.addEventListener("state", (e) => {
+    const was = conn.phase;
+    Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false }, JSON.parse(e.data), { online: true });
+    if (was !== "linked" && conn.phase === "linked") log(`${t("log.linked")} ${conn.address}`);
+    if (was === "linked" && conn.phase !== "linked") log(t("log.lost"));
+    render();
+  });
+  events.addEventListener("error", () => {
+    conn.online = false;
+    render();
+  });
+}
+
 async function start() {
   await setLang(savedLang());
   Object.assign(status, await api("api/status"));
@@ -281,6 +335,7 @@ async function start() {
     pairing.candidates = s.candidates;
   }
   render();
+  listen();
 }
 
 start().catch((err) => log(err.message));
