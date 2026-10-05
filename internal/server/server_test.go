@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +24,16 @@ func newFlow(t *testing.T) (*pairing.Flow, *profile.Store) {
 	}
 	// No test may scan the real network.
 	noLAN := func([]int) ([]string, error) { return nil, nil }
-	return pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), store
+	probe := func(ctx context.Context, targets []string) []pairing.Candidate {
+		for _, a := range targets {
+			if host, _, err := net.SplitHostPort(a); err != nil || host != "127.0.0.1" {
+				t.Errorf("a search was about to probe %s", a)
+				return nil
+			}
+		}
+		return pairing.Find(ctx, targets)
+	}
+	return pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN, Probe: probe}), store
 }
 
 // idleConnector has nothing paired and never scans the real network.

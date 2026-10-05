@@ -72,6 +72,10 @@ button:disabled { cursor: default; opacity: .45; }
 .rowact button:hover { color: var(--accent); }
 .rowact button.bad:hover { color: var(--bad); }
 .list tr[draggable="true"] { cursor: default; }
+.list tbody tr:focus { outline: none; }
+.list tbody tr:focus-visible td { box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
+.list tbody tr:focus-visible .rowact { opacity: 1; }
+.list tbody tr.sel:focus-visible td:first-child { box-shadow: inset 2px 0 var(--accent), inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 .list .drop td, .tree .node.drop { background: #0d1a24; box-shadow: inset 0 0 0 1px var(--accent); }
 .name-edit { background: var(--bg); border: 1px solid var(--accent); color: var(--text); font: inherit; padding: 2px 6px; width: min(100%, 420px); }
 .name-edit:focus { outline: none; }

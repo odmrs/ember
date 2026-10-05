@@ -48,6 +48,21 @@ func (e *PartialError) Is(target error) bool { return target == ErrPartial }
 
 func (e *PartialError) Unwrap() error { return e.Err }
 
+// MoveError is a batch move that stopped partway. The entries in Moved are
+// in the destination, the one at Failed is where it was (or, when Err is a
+// PartialError, where that says), and the ones after it were not tried.
+type MoveError struct {
+	Moved  []string // Library paths, as given, of the entries moved
+	Failed string
+	Err    error
+}
+
+func (e *MoveError) Error() string {
+	return fmt.Sprintf("library: moved %s, then %s failed: %v", strings.Join(e.Moved, ", "), e.Failed, e.Err)
+}
+
+func (e *MoveError) Unwrap() error { return e.Err }
+
 // Options changes what the write operations allow.
 type Options struct {
 	// ConfirmOpen allows touching the Book KOReader has open, or a folder
@@ -388,6 +403,7 @@ func (l *Library) Move(rels []string, to string, opt Options) ([]Warning, error)
 	ses := l.session()
 	var (
 		plans [][]step
+		moves []string
 		warns []Warning
 		open  []string
 		c     = claims{}
@@ -414,14 +430,18 @@ func (l *Library) Move(rels []string, to string, opt Options) ([]Warning, error)
 			open = append(open, it.rel)
 		}
 		plans = append(plans, steps)
+		moves = append(moves, rel)
 		warns = append(warns, w...)
 	}
 	if len(open) > 0 && !opt.ConfirmOpen {
 		return nil, fmt.Errorf("%w: %s", ErrOpenNow, strings.Join(open, ", "))
 	}
-	for _, steps := range plans {
+	for i, steps := range plans {
 		if err := l.run(steps); err != nil {
-			return warns, err
+			if i == 0 {
+				return nil, err
+			}
+			return warns, &MoveError{Moved: moves[:i], Failed: moves[i], Err: err}
 		}
 	}
 	return warns, nil

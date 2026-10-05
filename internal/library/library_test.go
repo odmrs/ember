@@ -402,16 +402,8 @@ func (d *dirFS) FreeSpace(p string) (free, total uint64, err error) {
 
 func (d *dirFS) SetFreeSpace(free uint64) { d.free.Store(free) }
 
-func (d *dirFS) Create(p string, src io.Reader) (int64, error) {
-	f, err := os.Create(d.Path(p))
-	if err != nil {
-		return 0, err
-	}
-	n, err := io.Copy(f, src)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return n, err
+func (d *dirFS) Create(p string) (io.WriteCloser, error) {
+	return os.OpenFile(d.Path(p), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 }
 
 func (d *dirFS) Open(p string) (io.ReadCloser, error) { return os.Open(d.Path(p)) }

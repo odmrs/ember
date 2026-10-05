@@ -263,21 +263,24 @@ func (d *Device) Rename(from, to string) error {
 	return d.sftp.Rename(from, to)
 }
 
-// Create writes src into path, creating the file or truncating it, and
-// returns how many bytes it read from src. Data is sent in packets with
-// several requests in flight, which is what makes SFTP fast over Wi-Fi;
-// memory stays bounded by those packets whatever the size of src. After an error the file
-// may hold any part of what was read, holes included.
-func (d *Device) Create(path string, src io.Reader) (int64, error) {
-	f, err := d.sftp.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+// Create creates a new file at path for writing and fails if path already
+// exists, so it never truncates anything. Copying into it with io.Copy sends
+// packets with several requests in flight, which is what makes SFTP fast
+// over Wi-Fi; memory stays bounded by those packets whatever the size of the
+// source.
+func (d *Device) Create(path string) (io.WriteCloser, error) {
+	f, err := d.sftp.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n, err := f.ReadFromWithConcurrency(src, 0)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return n, err
+	return newFile{f}, nil
+}
+
+// newFile is a file Create opened.
+type newFile struct{ *sftp.File }
+
+func (f newFile) ReadFrom(r io.Reader) (int64, error) {
+	return f.File.ReadFromWithConcurrency(r, 0)
 }
 
 // Open opens a file for reading. Copying from it with io.Copy reads with

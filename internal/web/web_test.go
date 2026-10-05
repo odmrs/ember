@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -100,7 +102,7 @@ func TestEveryServerCodeHasAMessage(t *testing.T) {
 	en := catalog(t, "en")
 	reasons := []string{
 		library.ReasonEmpty, library.ReasonDots, library.ReasonEncoding, library.ReasonReserved, library.ReasonControl,
-		library.ReasonTrailing, library.ReasonTooLong, library.ReasonHidden, library.ReasonSidecar, library.ReasonPart,
+		library.ReasonTrailing, library.ReasonTooLong, library.ReasonHidden, library.ReasonSidecar,
 	}
 	for _, r := range reasons {
 		if _, ok := en["err.name."+r]; !ok {
@@ -116,5 +118,122 @@ func TestEveryServerCodeHasAMessage(t *testing.T) {
 		if _, ok := en["warn."+w]; !ok {
 			t.Errorf("no message for warning %q", w)
 		}
+	}
+}
+
+// jsMaps reads the constant lookup tables of app.js (const NAME = {...};) as
+// name -> key -> value.
+func jsMaps(t *testing.T) map[string]map[string]string {
+	t.Helper()
+	block := regexp.MustCompile(`(?s)\nconst ([A-Z_]+) = \{(.*?)\};`)
+	pair := regexp.MustCompile(`(\w+): "([^"]*)"`)
+	out := map[string]map[string]string{}
+	for _, b := range block.FindAllStringSubmatch(read(t, "app.js"), -1) {
+		m := map[string]string{}
+		for _, p := range pair.FindAllStringSubmatch(b[2], -1) {
+			m[p[1]] = p[2]
+		}
+		out[b[1]] = m
+	}
+	if len(out["ERRORS"]) == 0 {
+		t.Fatal("no ERRORS table found in app.js")
+	}
+	return out
+}
+
+// Every code the server can answer with, and every code the dashboard makes
+// up itself, reads as a catalog message instead of the server's raw words.
+func TestEveryErrorCodeHasAMessage(t *testing.T) {
+	en := catalog(t, "en")
+	tables := jsMaps(t)
+	errs := tables["ERRORS"]
+
+	codes := map[string]string{}
+	sources, err := filepath.Glob("../server/*.go")
+	if err != nil || len(sources) == 0 {
+		t.Fatalf("server sources: %v", err)
+	}
+	written := regexp.MustCompile(`writeErrorCode\([^,]+,[^,]+,\s*"([a-z_]+)"|"error":\s*"([a-z_]+)"`)
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range written.FindAllStringSubmatch(string(src), -1) {
+			codes[m[1]+m[2]] = path
+		}
+	}
+	if len(codes) < 10 {
+		t.Fatalf("found only %d server codes; the pattern no longer matches writeError", len(codes))
+	}
+	made := regexp.MustCompile(`new APIError\("([a-z_]+)"`)
+	for _, m := range made.FindAllStringSubmatch(read(t, "app.js"), -1) {
+		codes[m[1]] = "app.js"
+	}
+	for _, c := range tables["HEAD_ERRORS"] {
+		codes[c] = "app.js HEAD_ERRORS"
+	}
+	// Reported in the pairing state rather than as an HTTP error.
+	codes["key_wait_timeout"] = "pairing state"
+
+	for code, from := range codes {
+		if code == "invalid_name" {
+			continue // its reason picks the message, checked above
+		}
+		key, ok := errs[code]
+		if !ok {
+			t.Errorf("code %q (%s) is not in ERRORS", code, from)
+			continue
+		}
+		if _, ok := en[key]; !ok {
+			t.Errorf("code %q maps to %q, which is not in the catalog", code, key)
+		}
+	}
+	for _, key := range []string{"err.internal", "err.name.invalid"} {
+		if _, ok := en[key]; !ok {
+			t.Errorf("fallback message %q is missing", key)
+		}
+	}
+}
+
+// Message keys kept in lookup tables are not t("...") calls, so the check on
+// used keys cannot see them.
+func TestEveryTableKeyIsInTheCatalog(t *testing.T) {
+	en := catalog(t, "en")
+	for name, table := range jsMaps(t) {
+		for k, v := range table {
+			if !strings.Contains(v, ".") {
+				continue
+			}
+			if _, ok := en[v]; !ok {
+				t.Errorf("%s[%s] = %q is not in the catalog", name, k, v)
+			}
+		}
+	}
+}
+
+func TestRetiredKeysAreGone(t *testing.T) {
+	for _, lang := range []string{"en", "pt"} {
+		c := catalog(t, lang)
+		// There is no help screen, and names ending in .part are allowed.
+		for _, k := range []string{"help", "err.name.part"} {
+			if _, ok := c[k]; ok {
+				t.Errorf("%s.json still has %q", lang, k)
+			}
+		}
+	}
+	if strings.Contains(read(t, "index.html"), `data-i18n="help"`) {
+		t.Error("index.html still shows the help button")
+	}
+}
+
+// The candidate survey reads KOReader's default Library root; the dashboard
+// spells it in one place.
+func TestDefaultRootIsNamedOnce(t *testing.T) {
+	if n := strings.Count(read(t, "app.js"), "/mnt/us/documents"); n != 1 {
+		t.Errorf("app.js spells the default library root %d times, want 1", n)
 	}
 }

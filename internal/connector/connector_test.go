@@ -2,9 +2,12 @@ package connector
 
 import (
 	"context"
+	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -411,4 +414,119 @@ func TestRedialAfterADropWaitsForTheNextTick(t *testing.T) {
 	}
 	clock.fire(t, RetryInterval)
 	waitFor(t, states, "relink", linkedAt(fake.Addr()))
+}
+
+// heldScan is a network search that finds target once, when released.
+type heldScan struct {
+	started, release chan struct{}
+	calls            atomic.Int32
+	target           string
+}
+
+func newHeldScan(target string) *heldScan {
+	return &heldScan{started: make(chan struct{}), release: make(chan struct{}), target: target}
+}
+
+func (h *heldScan) targets([]int) ([]string, error) {
+	if h.calls.Add(1) > 1 {
+		return nil, nil
+	}
+	close(h.started)
+	<-h.release
+	return []string{h.target}, nil
+}
+
+// A search started with the old login is called off when the Profile
+// changes, so it can neither link with that login nor write back the port
+// it searched on.
+func TestReloadCancelsTheSearch(t *testing.T) {
+	fake := fakedevice.New(t)
+	r := newRig(t, fake, closedPort(t), fake)
+	scan := newHeldScan(fake.Addr())
+	c := New(Config{Store: r.store, Targets: scan.targets, After: fast})
+	t.Cleanup(c.Close)
+	states := session(t, c)
+	<-scan.started
+
+	moved := closedPort(t)
+	host, port := splitAddr(t, moved)
+	r.update(func(p *profile.Profile) { p.Port = port })
+	c.Reload()
+	waitFor(t, states, "an attempt with the new port", func(s State) bool { return s.Address == moved && !s.Scanning })
+	close(scan.release)
+
+	time.Sleep(200 * time.Millisecond)
+	if _, err := c.Device(); err != ErrNotLinked {
+		t.Fatal("linked with the login the user changed")
+	}
+	if p, _ := r.store.Load(); p.Port != port || p.Address != host {
+		t.Fatalf("Profile now at %s, want %s", p.HostPort(), moved)
+	}
+}
+
+// A search result is only taken if the Profile still has the login the
+// search dialed with.
+func TestStaleSearchResultIsDropped(t *testing.T) {
+	fake := fakedevice.New(t)
+	saved := closedPort(t)
+	r := newRig(t, fake, saved, fake)
+	scan := newHeldScan(fake.Addr())
+	c := New(Config{Store: r.store, Targets: scan.targets, After: fast})
+	t.Cleanup(c.Close)
+	states := session(t, c)
+	<-scan.started
+
+	r.update(func(p *profile.Profile) { p.User = "reader" })
+	close(scan.release)
+	waitFor(t, states, "the search to end", func(s State) bool { return s.Phase == PhaseSearching && !s.Scanning })
+
+	if _, err := c.Device(); err != ErrNotLinked {
+		t.Fatal("linked with a login the Profile no longer has")
+	}
+	if p, _ := r.store.Load(); p.HostPort() != saved || p.User != "reader" {
+		t.Fatalf("Profile now %s@%s", p.User, p.HostPort())
+	}
+}
+
+// A host that takes the connection and never answers, and the network
+// errors that mean nothing could be reached, are "unreachable": neither the
+// port being closed nor a login problem.
+func TestClassifyUnreachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	held := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			held <- c
+		}
+	}()
+	defer func() {
+		select {
+		case c := <-held:
+			c.Close()
+		default:
+		}
+	}()
+	_, err = device.Dial(context.Background(), device.Config{Addr: ln.Addr().String(), User: "root", Timeout: 200 * time.Millisecond})
+	if got := classify(err); got != FailUnreachable {
+		t.Errorf("silent host: classify(%v) = %s", err, got)
+	}
+
+	for _, err := range []error{
+		&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded},
+		&net.OpError{Op: "dial", Net: "tcp", Err: syscall.EHOSTUNREACH},
+		&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH},
+		context.DeadlineExceeded,
+		io.EOF,
+	} {
+		if got := classify(err); got != FailUnreachable {
+			t.Errorf("classify(%v) = %s", err, got)
+		}
+	}
+	if got := classify(&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}); got != FailPortClosed {
+		t.Errorf("refused: %s", got)
+	}
 }

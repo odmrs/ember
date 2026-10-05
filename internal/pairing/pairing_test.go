@@ -227,8 +227,22 @@ func newFlow(t *testing.T, targets ...string) (*Flow, *profile.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := NewFlow(Config{Store: store, Targets: func([]int) ([]string, error) { return targets, nil }})
+	f := NewFlow(Config{Store: store, Targets: func([]int) ([]string, error) { return targets, nil }, Probe: loopbackOnly(t)})
 	return f, store
+}
+
+// loopbackOnly probes like Find, but fails the test instead of dialing
+// anything off this machine.
+func loopbackOnly(t *testing.T) func(context.Context, []string) []Candidate {
+	return func(ctx context.Context, targets []string) []Candidate {
+		for _, a := range targets {
+			if host, _, err := net.SplitHostPort(a); err != nil || host != "127.0.0.1" {
+				t.Errorf("a search was about to probe %s", a)
+				return nil
+			}
+		}
+		return Find(ctx, targets)
+	}
 }
 
 func scan(t *testing.T, f *Flow, address string) State {
@@ -340,6 +354,94 @@ func TestPairingWithKeyCopiedOverUSB(t *testing.T) {
 	}
 }
 
+// waitPhase polls the flow until it reaches phase.
+func waitPhase(t *testing.T, f *Flow, phase Phase) State {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if s := f.State(); s.Phase == phase {
+			return s
+		}
+	}
+	t.Fatalf("never reached %s; state %+v", phase, f.State())
+	return State{}
+}
+
+// The USB route when the user confirms before the key is on the Device:
+// ember keeps trying a key-only login and pairs as soon as the key is
+// there. It never logs in with a password meanwhile, even though this
+// Device would let it.
+func TestKeyOnlyPairingWaitsForTheKey(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	f, store := newFlow(t)
+	f.cfg.KeyPoll = 10 * time.Millisecond
+
+	c := scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.State(); s.Phase != PhaseAwaitKey || s.Address != c.Addr {
+		t.Fatalf("state = %+v", s)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if s := f.State(); s.Phase != PhaseAwaitKey {
+		t.Fatalf("paired without the key: %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("profile saved before the key was there")
+	}
+	if got := fake.ReadFile(t, fakedevice.AuthorizedKeys); got != "" {
+		t.Fatalf("ember wrote to the Device: %q", got)
+	}
+
+	pub, err := f.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.WriteFile(t, fakedevice.AuthorizedKeys, pub+"\n")
+	waitPhase(t, f, PhaseDone)
+	p, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HostPort() != c.Addr || p.HostKey != c.HostKey || !p.Survey.LibraryExists {
+		t.Fatalf("profile = %+v", p)
+	}
+}
+
+func TestKeyOnlyPairingGivesUp(t *testing.T) {
+	fake := fakedevice.New(t)
+	f, store := newFlow(t)
+	f.cfg.KeyPoll, f.cfg.KeyWait = 10*time.Millisecond, 100*time.Millisecond
+	c := scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	s := waitPhase(t, f, PhaseFound)
+	if s.Error != KeyWaitTimeout || len(s.Candidates) != 1 {
+		t.Fatalf("state = %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("profile saved")
+	}
+
+	// A new search calls off a wait in progress.
+	f.cfg.KeyWait = time.Minute
+	c = scan(t, f, fake.Addr()).Candidates[0]
+	if err := f.ConfirmKeyOnly(c.Addr, c.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	scan(t, f, fake.Addr())
+	pub, _ := f.PublicKey()
+	fake.WriteFile(t, fakedevice.AuthorizedKeys, pub+"\n")
+	time.Sleep(100 * time.Millisecond)
+	if s := f.State(); s.Phase != PhaseFound {
+		t.Fatalf("the called-off wait went on: %+v", s)
+	}
+	if _, err := store.Load(); !errors.Is(err, profile.ErrNotPaired) {
+		t.Fatal("the called-off wait paired")
+	}
+}
+
 func TestLaterConnectWithWrongHostKeyIsAnError(t *testing.T) {
 	fake := fakedevice.New(t)
 	impostor := fakedevice.New(t, fakedevice.WithHostKeySeed(9))
@@ -367,6 +469,62 @@ func TestScanRejectsBadAddresses(t *testing.T) {
 	}
 	if err := f.Scan("", 70000); !errors.Is(err, ErrBadAddress) {
 		t.Errorf("bad port: err = %v", err)
+	}
+}
+
+// A typed address is only probed when it is on the local network. The
+// check is called directly, so nothing here dials: literals need no lookup,
+// and names go to a resolver that answers from a table.
+func TestOnlyLocalAddressesAreProbed(t *testing.T) {
+	f, _ := newFlow(t)
+	names := map[string][]string{
+		"kindle.lan":  {"192.168.1.20", "fe80::1"},
+		"mixed.lan":   {"192.168.1.20", "8.8.8.8"},
+		"mapped.lan":  {"::ffff:93.184.216.34"},
+		"nowhere.lan": {},
+	}
+	f.cfg.LookupHost = func(_ context.Context, host string) ([]string, error) {
+		if a, ok := names[host]; ok {
+			return a, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	check := func(address string) ([]string, error) {
+		hostport, err := normalizeAddress(address, 0)
+		if err != nil {
+			return nil, err
+		}
+		return f.localAddrs(hostport)
+	}
+	local := []string{
+		"10.0.0.7", "172.16.0.1", "172.31.255.254", "192.168.0.42:22", "169.254.10.10",
+		"127.0.0.1", "[::1]:2222", "fd12:3456::1", "[fe80::1]:2222", "::ffff:192.168.1.5",
+	}
+	for _, a := range local {
+		if _, err := check(a); err != nil {
+			t.Errorf("%q: %v", a, err)
+		}
+	}
+	if got, err := check("kindle.lan:22"); err != nil || strings.Join(got, " ") != "192.168.1.20:22 [fe80::1]:22" {
+		t.Errorf("kindle.lan: %v, %v", got, err)
+	}
+	remote := []string{
+		"8.8.8.8", "1.1.1.1:2222", "100.64.0.1", "172.32.0.1", "192.0.2.1", "0.0.0.0", "224.0.0.1",
+		"2001:db8::1", "[2606:4700::1111]:22", "ff02::1", "::ffff:8.8.8.8", "mixed.lan", "mapped.lan",
+	}
+	for _, a := range remote {
+		if _, err := check(a); !errors.Is(err, ErrNotLocal) {
+			t.Errorf("%q: err = %v, want ErrNotLocal", a, err)
+		}
+		// Scan refuses it before probing anything.
+		if err := f.Scan(a, 0); !errors.Is(err, ErrNotLocal) {
+			t.Errorf("Scan(%q): err = %v, want ErrNotLocal", a, err)
+		}
+	}
+	for _, a := range []string{"nowhere.lan", "unknown.lan"} {
+		if _, err := check(a); !errors.Is(err, ErrBadAddress) {
+			t.Errorf("%q: err = %v, want ErrBadAddress", a, err)
+		}
 	}
 }
 

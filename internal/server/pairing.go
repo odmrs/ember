@@ -81,8 +81,19 @@ func routePairing(mux *http.ServeMux, flow *pairing.Flow) {
 		var req struct {
 			Address     string `json:"address"`
 			Fingerprint string `json:"fingerprint"`
+			// KeyOnly waits in the background for ember's key, copied over
+			// USB, instead of installing it through a passwordless login.
+			KeyOnly bool `json:"keyOnly"`
 		}
 		if !decode(w, r, &req) {
+			return
+		}
+		if req.KeyOnly {
+			if err := flow.ConfirmKeyOnly(req.Address, req.Fingerprint); err != nil {
+				writeError(w, err)
+				return
+			}
+			writeJSONStatus(w, http.StatusAccepted, flow.State())
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), deviceTimeout)
@@ -155,6 +166,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &mismatch):
 		writeErrorCode(w, http.StatusConflict, "host_key_mismatch", err.Error())
+	case errors.Is(err, pairing.ErrNotLocal):
+		writeErrorCode(w, http.StatusBadRequest, "address_not_local", err.Error())
 	case errors.Is(err, pairing.ErrBadAddress):
 		writeErrorCode(w, http.StatusBadRequest, "bad_address", err.Error())
 	case errors.Is(err, pairing.ErrAlreadyPaired):

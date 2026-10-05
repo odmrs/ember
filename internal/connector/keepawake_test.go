@@ -144,8 +144,9 @@ func (b *syncBuffer) String() string {
 
 func captureLog(t *testing.T) *syncBuffer {
 	b := &syncBuffer{}
+	prev := log.Writer()
 	log.SetOutput(b)
-	t.Cleanup(func() { log.SetOutput(nil) })
+	t.Cleanup(func() { log.SetOutput(prev) })
 	return b
 }
 
@@ -215,4 +216,55 @@ func TestReloadAfterForgetUnlinks(t *testing.T) {
 	if _, err := c.Device(); err == nil {
 		t.Fatal("still linked to a forgotten Device")
 	}
+}
+
+// A command the Device refuses to start counts as unavailable just like
+// one that exits with an error: logged once, not tried again on a reload or
+// the next link, until keep-awake is switched off and on.
+func TestKeepAwakeThatCannotStartIsNotRetried(t *testing.T) {
+	logs := captureLog(t)
+	fake := fakedevice.New(t, fakedevice.RefusingExec())
+	r := newRig(t, fake, fake.Addr(), fake)
+	c := r.connector(nil, fast)
+	states := session(t, c)
+	waitFor(t, states, "keep-awake unavailable", awake(AwakeUnavailable))
+
+	c.Reload()
+	fake.Stop()
+	waitFor(t, states, "link lost", func(s State) bool { return s.Phase == PhaseSearching })
+	fake.Start()
+	waitFor(t, states, "relinked, still unavailable", awake(AwakeUnavailable))
+	time.Sleep(100 * time.Millisecond)
+	if n := len(fake.Execs()); n != 1 {
+		t.Fatalf("keep-awake tried %d times, want once", n)
+	}
+	if n := strings.Count(logs.String(), "could not start"); n != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", n, logs)
+	}
+
+	r.update(func(p *profile.Profile) { p.KeepAwake = false })
+	c.Reload()
+	waitFor(t, states, "keep-awake off", awake(AwakeOff))
+	r.update(func(p *profile.Profile) { p.KeepAwake = true })
+	c.Reload()
+	waitFor(t, states, "unavailable again", awake(AwakeUnavailable))
+	if n := len(fake.Execs()); n != 2 {
+		t.Fatalf("keep-awake tried %d times, want twice", n)
+	}
+}
+
+// A command that ends with status 0 ran to its end; the Device is not
+// unavailable, and the next link starts it again.
+func TestKeepAwakeThatEndsCleanlyIsNotUnavailable(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.QuickExit())
+	r := newRig(t, fake, fake.Addr(), fake)
+	c := r.connector(nil, fast)
+	states := session(t, c)
+	waitFor(t, states, "keep-awake ended", awake(AwakeOff))
+
+	fake.Stop()
+	waitFor(t, states, "link lost", func(s State) bool { return s.Phase == PhaseSearching })
+	fake.Start()
+	waitFor(t, states, "relinked", linkedAt(fake.Addr()))
+	eventually(t, "keep-awake started again", func() bool { return len(fake.Execs()) == 2 })
 }

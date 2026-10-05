@@ -12,9 +12,16 @@ copy the public key over USB instead; the dashboard shows it ready to copy.
 Some users will keep "Login without password" on anyway. ember supports that as an
 explicit Profile setting, off by default. Enabling it shows a confirmation dialog
 stating the risk (root for anyone on the LAN while the SSH server is up) and only
-takes effect after the user confirms. In this mode ember authenticates with an empty
-password instead of its key, still enforces the pinned host key, and the dashboard
-keeps a visible warning banner until the mode is turned off.
+takes effect after the user confirms. In this mode ember authenticates with a fixed,
+non-secret password, the string `ember`, instead of its key, still enforces the
+pinned host key, and the dashboard keeps a visible warning banner until the mode is
+turned off. KOReader's patched dropbear accepts any password in this mode, so the
+value protects nothing and is not a secret. It is not empty because SSH servers
+handle a blank password as a case of its own (dropbear has a separate switch for
+blank-password logins, `-B`), while KOReader's patch only changes how a password is
+checked; a fixed word keeps ember on the path the patch covers whatever a build does
+with blank ones. This has been checked against the fake Device only and is part of
+the real-Device check of ticket 02.
 
 ## Amendment: automatic setup
 

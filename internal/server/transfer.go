@@ -55,13 +55,13 @@ func routeTransfer(mux *http.ServeMux, a *access) {
 			writeError(w, err)
 			return
 		}
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		p, warns, err := lib.Upload(q.Get("folder"), q.Get("name"), r.ContentLength, r.Body, opt)
+		p, warns, err := a.upload(lib, q.Get("folder"), q.Get("name"), r.ContentLength, r.Body, opt)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
 		res := opResult{Path: p, Warnings: warns}
 		if res.Warnings == nil {
 			res.Warnings = []library.Warning{}
@@ -93,6 +93,32 @@ func routeTransfer(mux *http.ServeMux, a *access) {
 			_, _ = io.Copy(w, dl.Body)
 		}
 	})
+}
+
+// upload runs the checks and the final rename under the write lock and
+// streams the data without it, so a large file over slow Wi-Fi does not hold
+// up every other write. The rename checks the name again.
+func (a *access) upload(lib *library.Library, folder, name string, size int64, body io.Reader, opt library.UploadOptions) (string, []library.Warning, error) {
+	a.mu.Lock()
+	u, err := lib.BeginUpload(folder, name, size, a.reserved(), opt)
+	if err == nil {
+		a.uploads[u.Part] = uint64(size) + library.UploadMargin
+	}
+	a.mu.Unlock()
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() {
+		a.mu.Lock()
+		delete(a.uploads, u.Part)
+		a.mu.Unlock()
+	}()
+	if err := u.Write(body); err != nil {
+		return "", nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return u.Finish()
 }
 
 // attachment names the saved file. Non-ASCII names go in the RFC 2231 form

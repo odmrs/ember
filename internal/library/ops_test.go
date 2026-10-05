@@ -73,39 +73,38 @@ func (s *spy) Rename(from, to string) error {
 }
 
 func TestValidName(t *testing.T) {
-	ok := []string{"Dune.epub", "Sci-Fi", "Ação & Aventura", "a", "名前", strings.Repeat("x", 240), "Dune. Messiah", "#1 [draft]"}
+	ok := []string{"Dune.epub", "Sci-Fi", "Ação & Aventura", "a", "名前", strings.Repeat("x", 240), "Dune. Messiah", "#1 [draft]", "Dune.epub.part", "x.PART"}
 	for _, name := range ok {
 		if err := ValidName(name); err != nil {
 			t.Errorf("ValidName(%q) = %v", name, err)
 		}
 	}
 	bad := map[string]string{
-		"":                       ReasonEmpty,
-		".":                      ReasonDots,
-		"..":                     ReasonDots,
-		"a/b":                    ReasonReserved,
-		`a\b`:                    ReasonReserved,
-		"a:b":                    ReasonReserved,
-		"a*":                     ReasonReserved,
-		"a?":                     ReasonReserved,
-		`a"b`:                    ReasonReserved,
-		"a<b":                    ReasonReserved,
-		"a>b":                    ReasonReserved,
-		"a|b":                    ReasonReserved,
-		"a\x00b":                 ReasonControl,
-		"a\nb":                   ReasonControl,
-		"a\tb":                   ReasonControl,
-		"a\x7f":                  ReasonControl,
-		"name.":                  ReasonTrailing,
-		"name ":                  ReasonTrailing,
-		strings.Repeat("x", 241): ReasonTooLong,
-		strings.Repeat("é", 121): ReasonTooLong, // 242 bytes
-		".hidden":                ReasonHidden,
-		"Dune.sdr":               ReasonSidecar,
-		"Dune.SDR":               ReasonSidecar,
-		"Dune.epub.part":         ReasonPart,
-		"x.PART":                 ReasonPart,
-		"bad\xffutf8":            ReasonEncoding,
+		"":                             ReasonEmpty,
+		".":                            ReasonDots,
+		"..":                           ReasonDots,
+		"a/b":                          ReasonReserved,
+		`a\b`:                          ReasonReserved,
+		"a:b":                          ReasonReserved,
+		"a*":                           ReasonReserved,
+		"a?":                           ReasonReserved,
+		`a"b`:                          ReasonReserved,
+		"a<b":                          ReasonReserved,
+		"a>b":                          ReasonReserved,
+		"a|b":                          ReasonReserved,
+		"a\x00b":                       ReasonControl,
+		"a\nb":                         ReasonControl,
+		"a\tb":                         ReasonControl,
+		"a\x7f":                        ReasonControl,
+		"name.":                        ReasonTrailing,
+		"name ":                        ReasonTrailing,
+		strings.Repeat("x", 241):       ReasonTooLong,
+		strings.Repeat("é", 121):       ReasonTooLong, // 242 bytes
+		".hidden":                      ReasonHidden,
+		"Dune.sdr":                     ReasonSidecar,
+		"Dune.SDR":                     ReasonSidecar,
+		".ember-0123456789abcdef.part": ReasonHidden,
+		"bad\xffutf8":                  ReasonEncoding,
 	}
 	for name, reason := range bad {
 		err := ValidName(name)
@@ -269,6 +268,30 @@ func TestMoveCarriesSidecarsAndFolders(t *testing.T) {
 		}
 		if exists(t, d, root+"/Dune.sdr") {
 			t.Fatal("sidecar left behind")
+		}
+	})
+}
+
+// A batch that fails partway says which entries already went.
+func TestMoveStoppedPartwaySaysWhatMoved(t *testing.T) {
+	backends(t, func(t *testing.T, fsys FS, d disk) {
+		library(t, d)
+		s := &spy{FS: fsys, failRename: func(from, _ string) bool { return strings.HasSuffix(from, "/cover.png") }}
+		_, err := New(s, root).Move([]string{"Dune.epub", "cover.png", "Neuromancer.mobi"}, "Empty", Options{})
+		var me *MoveError
+		if !errors.As(err, &me) || !errors.Is(err, errInjected) {
+			t.Fatalf("err = %v", err)
+		}
+		if strings.Join(me.Moved, ",") != "Dune.epub" || me.Failed != "cover.png" {
+			t.Fatalf("moved %v, failed %q", me.Moved, me.Failed)
+		}
+		if got := listed(t, fsys, "Empty"); got != "Dune.epub" {
+			t.Fatalf("destination has %s", got)
+		}
+		s.failRename = func(from, _ string) bool { return strings.HasSuffix(from, "/Neuromancer.mobi") }
+		_, err = New(s, root).Move([]string{"Neuromancer.mobi", "cover.png"}, "Empty", Options{})
+		if errors.As(err, &me) || !errors.Is(err, errInjected) {
+			t.Fatalf("nothing moved, err = %v", err)
 		}
 	})
 }

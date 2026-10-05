@@ -1,6 +1,8 @@
 package library
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -9,10 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-// partSuffix marks a file still being uploaded. The Kindle's indexer and
-// KOReader see no Book until the finished file is renamed into place.
-const partSuffix = ".part"
 
 // UploadMargin is kept free on the Device beyond the file itself: FAT rounds
 // every file up to whole clusters, and a full userstore upsets the Kindle.
@@ -149,58 +147,133 @@ func (s *sourceReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Upload writes size bytes from src into folder under name. The data goes to
-// "<name>.part" first and is renamed into place once complete, so neither
-// KOReader nor the Kindle's indexer ever sees half a file. Nothing is read
-// from src until the name, the place and the free space have been checked,
-// and the name is checked again before the rename. It returns the Library
-// path of the new file.
-func (l *Library) Upload(folder, name string, size int64, src io.Reader, opt UploadOptions) (string, []Warning, error) {
+// Pending is an upload that passed its checks and has a part to write to.
+// Its three steps let a caller hold a lock for the checks and the rename
+// without holding it while the data streams in.
+type Pending struct {
+	l           *Library
+	rel, dir    string
+	name, final string
+	size        int64
+	opt         UploadOptions
+	// Part is the Device path of the file the data goes to until the
+	// rename: hidden, so no listing shows it, and named so that it cannot
+	// be a file the user put there.
+	Part string
+}
+
+// partPrefix and partSuffix frame the name of an upload's part: a dot, so
+// nothing lists it and no name the validator lets through can match it,
+// then random hex, so two uploads never share one. The Book's own name is
+// left out, so a name of the longest length FAT allows still has a part.
+const (
+	partPrefix = ".ember-"
+	partSuffix = ".part"
+	partRandom = 8 // bytes
+)
+
+func partName() string {
+	b := make([]byte, partRandom)
+	_, _ = rand.Read(b)
+	return partPrefix + hex.EncodeToString(b) + partSuffix
+}
+
+// IsPart reports whether name is one ember gives the part of an upload.
+func IsPart(name string) bool {
+	h, ok := strings.CutPrefix(name, partPrefix)
+	if !ok {
+		return false
+	}
+	h, ok = strings.CutSuffix(h, partSuffix)
+	if !ok || len(h) != 2*partRandom {
+		return false
+	}
+	return strings.Trim(h, "0123456789abcdef") == ""
+}
+
+// BeginUpload checks that size bytes named name can go into folder: the
+// name, the place, that nothing already holds the name (unless replacing)
+// and that it fits next to reserved bytes other uploads still have to
+// write. It writes nothing.
+func (l *Library) BeginUpload(folder, name string, size int64, reserved uint64, opt UploadOptions) (*Pending, error) {
 	if err := ValidName(name); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if size < 0 {
-		return "", nil, fmt.Errorf("%w: no size given", ErrIncomplete)
+		return nil, fmt.Errorf("%w: no size given", ErrIncomplete)
 	}
 	rel, dir, infos, err := l.uploadFolder(folder)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	final, _, err := l.target(dir, infos, name, opt)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	free, _, err := l.fs.FreeSpace(dir)
 	if err != nil {
-		return "", nil, deviceErr(err)
+		return nil, deviceErr(err)
 	}
-	if need(size) > free {
-		return "", nil, &NoSpaceError{Need: need(size), Free: free}
+	if need(size)+reserved > free {
+		return nil, &NoSpaceError{Need: need(size), Free: free - min(free, reserved)}
 	}
+	return &Pending{l: l, rel: rel, dir: dir, name: name, final: final, size: size, opt: opt,
+		Part: path.Join(dir, partName())}, nil
+}
 
-	part := path.Join(dir, final+partSuffix)
+// Write streams the upload into its part. The part is created, never
+// truncated: if its name is somehow taken, Write fails and leaves that file
+// alone. Once the part exists, any error removes it.
+func (u *Pending) Write(src io.Reader) error {
+	w, err := u.l.fs.Create(u.Part)
+	if err != nil {
+		return deviceErr(err)
+	}
 	in := &sourceReader{r: src}
 	// One byte past size tells a longer body from an exact one.
-	n, err := l.fs.Create(part, &io.LimitedReader{R: in, N: size + 1})
+	n, err := io.Copy(w, &io.LimitedReader{R: in, N: u.size + 1})
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
 	switch {
 	case in.err != nil:
 		err = fmt.Errorf("%w: %v", ErrIncomplete, in.err)
 	case err != nil:
 		err = deviceErr(err)
-	case n != size:
-		err = fmt.Errorf("%w: got %d of %d bytes", ErrIncomplete, n, size)
+	case n != u.size:
+		err = fmt.Errorf("%w: got %d of %d bytes", ErrIncomplete, n, u.size)
 	}
 	if err != nil {
-		_ = l.fs.Remove(part)
-		return "", nil, err
+		_ = u.l.fs.Remove(u.Part)
 	}
+	return err
+}
 
-	warns, err := l.place(dir, part, name, final, opt)
+// Finish renames the written part into place and returns the Library path
+// of the new file. The folder is read again first, since something may have
+// taken the name while the data streamed in. On an error the part is
+// removed.
+func (u *Pending) Finish() (string, []Warning, error) {
+	warns, err := u.l.place(u.dir, u.Part, u.name, u.final, u.opt)
 	if err != nil {
-		_ = l.fs.Remove(part)
+		_ = u.l.fs.Remove(u.Part)
 		return "", nil, err
 	}
-	return path.Join(rel, final), warns, nil
+	return path.Join(u.rel, u.final), warns, nil
+}
+
+// Upload writes size bytes from src into folder under name: BeginUpload,
+// Write and Finish in one go. Neither KOReader nor the Kindle's indexer ever
+// sees half a file, and nothing is read from src until the checks pass.
+func (l *Library) Upload(folder, name string, size int64, src io.Reader, opt UploadOptions) (string, []Warning, error) {
+	u, err := l.BeginUpload(folder, name, size, 0, opt)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := u.Write(src); err != nil {
+		return "", nil, err
+	}
+	return u.Finish()
 }
 
 // place renames the finished part to its final name. The folder is read
@@ -235,45 +308,45 @@ func (l *Library) place(dir, part, name, final string, opt UploadOptions) ([]War
 }
 
 // CleanParts deletes the parts that interrupted uploads left anywhere in the
-// Library and returns their Library paths. Only what ember could have
-// written is taken: a regular file named "<valid name>.part", outside
-// Sidecars and hidden folders, never through a link.
-func (l *Library) CleanParts() ([]string, error) {
+// Library and returns their Library paths. Only ember's own parts are taken:
+// regular files whose name IsPart matches, outside Sidecars and hidden
+// folders, never through a link. A part for which inUse returns true (a
+// Device path) belongs to an upload still running and is kept.
+func (l *Library) CleanParts(inUse func(string) bool) ([]string, error) {
 	root, err := l.realRoot()
 	if err != nil {
 		return nil, err
 	}
 	var removed []string
-	err = l.cleanParts(root, "", &removed)
+	err = l.cleanParts(root, "", inUse, &removed)
 	return removed, err
 }
 
-func (l *Library) cleanParts(dir, rel string, removed *[]string) error {
+func (l *Library) cleanParts(dir, rel string, inUse func(string) bool, removed *[]string) error {
 	infos, err := l.fs.ReadDir(dir)
 	if err != nil {
 		return deviceErr(err)
 	}
 	for _, fi := range infos {
-		name := fi.Name()
+		name, full := fi.Name(), path.Join(dir, fi.Name())
 		switch {
-		case strings.HasPrefix(name, "."), fi.Mode()&fs.ModeSymlink != 0, isSidecar(fi):
-		case fi.IsDir():
-			if err := l.cleanParts(path.Join(dir, name), path.Join(rel, name), removed); err != nil {
-				return err
+		case fi.Mode()&fs.ModeSymlink != 0:
+		case fi.Mode().IsRegular() && IsPart(name):
+			if inUse != nil && inUse(full) {
+				continue
 			}
-		case fi.Mode().IsRegular() && isPart(name):
-			if err := l.fs.Remove(path.Join(dir, name)); err != nil {
+			if err := l.fs.Remove(full); err != nil {
 				return deviceErr(err)
 			}
 			*removed = append(*removed, path.Join(rel, name))
+		case strings.HasPrefix(name, "."), isSidecar(fi):
+		case fi.IsDir():
+			if err := l.cleanParts(full, path.Join(rel, name), inUse, removed); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
-}
-
-func isPart(name string) bool {
-	stem, ok := strings.CutSuffix(name, partSuffix)
-	return ok && ValidName(stem) == nil
 }
 
 // Download is an open file of the Library. The caller closes Body.
