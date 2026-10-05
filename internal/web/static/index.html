@@ -17,7 +17,6 @@
       <span id="link"><span class="dot"></span><span id="link-text"></span></span>
       <button type="button" class="bracket" id="settings-btn" data-action="settings" disabled data-i18n="settings"></button>
       <span class="lang">[<button type="button" data-lang="en">EN</button>|<button type="button" data-lang="pt">PT</button>]</span>
-      <button type="button" class="bracket" disabled data-i18n="help"></button>
     </nav>
   </header>
 
@@ -60,6 +59,16 @@
         <li data-i18n="pair.installKey"></li>
         <li data-i18n="pair.installVerify"></li>
       </ol>
+    </div>
+
+    <div class="pane" data-view="awaiting">
+      <div class="label blink" id="await-text"></div>
+      <p data-i18n="pair.awaitingBody"></p>
+      <pre class="pubkey" id="await-pubkey"></pre>
+      <div class="actions">
+        <button type="button" class="secondary" data-action="copy" data-i18n="pair.copy"></button>
+        <button type="button" class="secondary" data-action="search" data-i18n="pair.searchAgain"></button>
+      </div>
     </div>
 
     <div class="pane" data-view="lock">
@@ -199,7 +208,7 @@
           <input type="file" id="upload-input" multiple hidden>
         </div>
       </div>
-      <table class="list">
+      <table class="list" role="grid" aria-multiselectable="true">
         <thead><tr><th data-i18n="col.name"></th><th class="num" data-i18n="col.size"></th><th class="act"></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -216,7 +225,7 @@
     <ul class="queue-rows" id="queue-rows"></ul>
   </section>
 
-  <dialog class="box dialog" id="dialog">
+  <dialog class="box dialog" id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-body">
     <form method="dialog">
       <div class="head"><span class="label" id="dialog-title"></span></div>
       <div class="dialog-body" id="dialog-body"></div>

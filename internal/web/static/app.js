@@ -27,7 +27,12 @@ async function api(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
-  const res = await fetch(path, init);
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch (err) {
+    throw new APIError("server_down", err.message);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new APIError(data.error ?? "internal", data.message ?? `${path}: ${res.status}`, data);
   return data;
@@ -49,10 +54,18 @@ async function setLang(next) {
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const b of document.querySelectorAll("[data-lang]")) b.setAttribute("aria-pressed", b.dataset.lang === lang);
   render();
+  for (const it of uploads.items) fillRow(it);
+}
+
+function changeLang(next) {
+  setLang(next).catch((err) => log(errorText(err), err.message));
 }
 
 const status = { version: "", state: "unpaired", device: null };
-const pairing = { view: "start", candidates: [], error: null, locked: false };
+const pairing = { view: "start", candidates: [], error: null, locked: false, address: "" };
+// The pairing survey reads KOReader's default Library root; the chosen root
+// is only known once a Device is paired.
+const DEFAULT_ROOT = "/mnt/us/documents";
 // conn mirrors the Connector, pushed by the server over /api/events.
 const conn = { online: false, phase: "idle", attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" };
 const ui = { settings: false };
@@ -72,6 +85,13 @@ const ERRORS = {
   already_paired: "err.alreadyPaired",
   unreachable: "err.unreachable",
   not_paired: "err.notPaired",
+  not_confirmed: "err.notConfirmed",
+  auth_rejected: "err.authRejected",
+  address_not_local: "err.addressNotLocal",
+  key_wait_timeout: "err.keyWaitTimeout",
+  move_incomplete: "err.moveIncomplete",
+  server_down: "err.serverDown",
+  internal: "err.internal",
   not_linked: "err.notLinked",
   outside_library: "err.outsideLibrary",
   not_found: "err.notFound",
@@ -94,9 +114,15 @@ const ERRORS = {
 };
 
 // errorText is an API error as the user reads it; a refused name says why.
-function errorText(err) {
-  if (err.code === "invalid_name") return t(`err.name.${err.data.reason}`);
-  return t(ERRORS[err.code] ?? "err.internal");
+// Messages that name what they refused end in a colon, filled by subject when
+// the caller knows it.
+function errorText(err, subject) {
+  if (err.code === "invalid_name") {
+    const key = `err.name.${err.data?.reason}`;
+    return t(key in messages ? key : "err.name.invalid");
+  }
+  const text = t(ERRORS[err.code] ?? "err.internal");
+  return subject ? `${text} ${subject}` : text.replace(/:$/, ".");
 }
 
 const $ = (id) => document.getElementById(id);
@@ -168,7 +194,6 @@ function render() {
   $("awake-line").dataset.state = awake;
   if (awake) $("awake-line").textContent = t(`awake.${awake}`);
   if (!active && !connecting && !settings) renderLibrary();
-  if (uploads.items.length) renderQueue();
 }
 
 function renderConnecting() {
@@ -189,16 +214,20 @@ function renderConnecting() {
 
 function renderPairing() {
   for (const pane of document.querySelectorAll("#pair [data-view]")) pane.hidden = pane.dataset.view !== pairing.view;
-  const stages = { start: 1, scanning: 1, found: 2, installing: 3, lock: 4 };
+  const stages = { start: 1, scanning: 1, found: 2, installing: 3, awaiting: 3, lock: 4 };
   $("pair-stage").textContent = `${t("pair.stage")} ${stages[pairing.view]}/4`;
   $("pair-extra").hidden = !["start", "found"].includes(pairing.view);
   $("manual-address").placeholder = t("pair.manualPlaceholder");
 
   const err = $("pair-error");
   err.hidden = !pairing.error;
-  if (pairing.error) err.textContent = t(ERRORS[pairing.error.code] ?? "err.internal") + "\n" + pairing.error.message;
+  if (pairing.error) {
+    err.textContent = errorText(pairing.error);
+    err.title = pairing.error.message ?? "";
+  }
 
   if (pairing.view === "found") renderCandidates();
+  if (pairing.view === "awaiting") $("await-text").textContent = fill(t("pair.awaiting"), { address: pairing.address });
 
   const lock = $("lock");
   lock.dataset.locked = pairing.locked;
@@ -223,7 +252,7 @@ function renderCandidates() {
     if (s) {
       item.append(
         row(t("pair.koreader"), s.koreaderVersion || "—"),
-        row(t("pair.library"), "/mnt/us/documents ", el("span", { class: s.libraryExists ? "ok" : "bad" }, t(s.libraryExists ? "pair.exists" : "pair.missing"))),
+        row(t("pair.library"), `${DEFAULT_ROOT} `, el("span", { class: s.libraryExists ? "ok" : "bad" }, t(s.libraryExists ? "pair.exists" : "pair.missing"))),
         row(t("pair.free"), `${bytes(s.freeBytes)} / ${bytes(s.totalBytes)}`),
         row(t("pair.metadata"), s.metadataMode || "doc"),
         row(t("pair.openBook"), s.lastFile ? s.lastFile.split("/").pop() : "—"),
@@ -231,10 +260,10 @@ function renderCandidates() {
     } else {
       item.append(el("p", { class: "dim" }, t("pair.noPasswordless")));
     }
-    if (c.error) item.append(el("p", { class: "bad" }, c.error));
+    if (c.error) item.append(el("p", { class: "bad", title: c.error }, t("pair.candidateError")));
     if (c.hostKey) {
       item.append(el("div", { class: "actions" },
-        el("button", { type: "button", class: "primary", "data-action": "confirm", "data-address": c.address, "data-fingerprint": c.fingerprint }, t("pair.confirm"))));
+        el("button", { type: "button", class: "primary", "data-action": "confirm", "data-address": c.address, "data-fingerprint": c.fingerprint, "data-passwordless": c.passwordless }, t("pair.confirm"))));
     }
     list.append(item);
   }
@@ -249,11 +278,22 @@ const lib = {
   children: new Map(), // folder path -> its subfolders, filled as folders are read
   expanded: new Set([""]),
   sel: new Set(), // selected Library paths in the open folder
-  anchor: null, // where a shift-click range starts
+  anchor: null, // where a shift-click or Shift+arrow range starts
+  cursor: null, // the row the arrow keys move from
   edit: null, // {kind: "new"} or {kind: "rename", path}, with the typed value
   busy: false, // a change is on its way to the Device
   seq: 0,
 };
+
+// resetLibrary forgets everything read from the Device, for when the Library
+// it came from is gone: another root, or no Device at all.
+function resetLibrary() {
+  Object.assign(lib, {
+    path: "", folder: null, stats: null, children: new Map(), expanded: new Set([""]),
+    sel: new Set(), anchor: null, cursor: null, edit: null,
+  });
+  history.replaceState(null, "", location.pathname);
+}
 
 // The open folder is kept in the URL so a reload returns to it.
 function folderFromHash() {
@@ -287,7 +327,7 @@ async function openFolder(p) {
   try {
     const f = await readFolder(p);
     if (seq !== lib.seq) return;
-    if (f.path !== lib.path) Object.assign(lib, { sel: new Set(), anchor: null, edit: null });
+    if (f.path !== lib.path) Object.assign(lib, { sel: new Set(), anchor: null, cursor: null, edit: null });
     Object.assign(lib, { path: f.path, folder: f });
     history.replaceState(null, "", f.path ? `#${encodeURIComponent(f.path)}` : location.pathname);
     for (const a of ancestors(f.path)) lib.expanded.add(a);
@@ -298,7 +338,7 @@ async function openFolder(p) {
     }
   } catch (err) {
     if (seq !== lib.seq) return;
-    log(`${t(ERRORS[err.code] ?? "err.internal")} ${p}`);
+    log(errorText(err, where(p)), err.message);
     if (p && (err.code === "not_found" || err.code === "not_folder" || err.code === "outside_library")) openFolder("");
   }
 }
@@ -308,16 +348,18 @@ async function toggleFolder(p) {
     lib.expanded.delete(p);
   } else {
     lib.expanded.add(p);
-    if (!lib.children.has(p)) await readFolder(p).catch((err) => log(t(ERRORS[err.code] ?? "err.internal")));
+    if (!lib.children.has(p)) await readFolder(p).catch((err) => log(errorText(err, where(p)), err.message));
   }
   render();
 }
 
 async function refreshLibrary() {
   lib.children.clear();
-  api("api/library/stats").then((s) => { lib.stats = s; render(); }, (err) => log(t(ERRORS[err.code] ?? "err.internal")));
+  api("api/library/stats").then((s) => { lib.stats = s; render(); }, (err) => log(errorText(err), err.message));
   await openFolder(lib.path);
 }
+
+const META_HINT = { hash: "meta.hash", dir: "meta.dir" };
 
 function renderHero(d) {
   const root = lib.stats?.root ?? d.libraryRoot;
@@ -329,7 +371,7 @@ function renderHero(d) {
   const meta = $("meta");
   meta.hidden = mode === "doc";
   meta.textContent = `${t("meta.tag")} ${mode.toUpperCase()}`;
-  meta.title = t(mode === "hash" ? "meta.hash" : "meta.dir");
+  meta.title = fill(t(META_HINT[mode] ?? "meta.unknown"), { mode });
   meta.classList.toggle("warn", mode !== "hash");
 }
 
@@ -354,17 +396,17 @@ function itemCount(e) {
   return `${e.items} ${t(e.items === 1 ? "folder.item" : "folder.items")}`;
 }
 
-function nameInput(value) {
-  return el("input", { class: "name-edit", id: "name-edit", value, autocomplete: "off", spellcheck: "false" });
+function nameInput(value, label) {
+  return el("input", { class: "name-edit", id: "name-edit", value, autocomplete: "off", spellcheck: "false", "aria-label": label });
 }
 
-function fileRow(e) {
+function fileRow(e, stop) {
   const name = el("td", { class: "name" });
   const tr = el("tr", { class: e.kind, "data-select": e.path, draggable: "true" }, name);
-  if (lib.sel.has(e.path)) tr.classList.add("sel");
+  markRow(tr, stop);
   const editing = lib.edit?.kind === "rename" && lib.edit.path === e.path;
   if (editing) {
-    name.append(nameInput(lib.edit.value));
+    name.append(nameInput(lib.edit.value, fill(t("rename.label"), { name: e.name })));
   } else if (e.kind === "folder") {
     name.append(el("button", { type: "button", class: "go", "data-action": "open", "data-path": e.path }, `▸ ${e.name}`));
   } else {
@@ -399,12 +441,15 @@ function renderLibrary() {
       el("td", {}), el("td", {})));
   }
   if (lib.edit?.kind === "new") {
-    const input = nameInput(lib.edit.value);
+    const input = nameInput(lib.edit.value, t("newFolder.label"));
     input.placeholder = t("newFolder.placeholder");
     rows.push(el("tr", { class: "folder new" }, el("td", { class: "name" }, "▸ ", input), el("td", {}), el("td", {})));
   }
-  for (const e of lib.folder?.entries ?? []) rows.push(fileRow(e));
+  const stop = tabStop();
+  for (const e of lib.folder?.entries ?? []) rows.push(fileRow(e, stop));
+  const focused = document.activeElement?.matches?.("#rows tr[data-select]");
   $("rows").replaceChildren(...rows);
+  if (focused && !lib.edit) cursorRow()?.focus();
   $("empty").hidden = !lib.folder || lib.folder.entries.length > 0 || lib.edit?.kind === "new";
   $("tb-folder").disabled = !lib.folder || lib.busy;
   $("tb-upload").disabled = !lib.folder;
@@ -426,6 +471,7 @@ function select(p, e) {
     const [a, b] = [order.indexOf(lib.anchor), order.indexOf(p)].sort((x, y) => x - y);
     if (a >= 0) {
       lib.sel = new Set(order.slice(a, b + 1));
+      lib.cursor = p;
       return markSelection();
     }
   }
@@ -436,13 +482,54 @@ function select(p, e) {
     lib.sel = new Set([p]);
   }
   lib.anchor = p;
+  lib.cursor = p;
   markSelection();
+}
+
+// step moves the selection one row up or down from the cursor; with Shift it
+// grows or shrinks the range from the anchor instead.
+function step(by, extend) {
+  const order = (lib.folder?.entries ?? []).map((x) => x.path);
+  if (!order.length) return;
+  const at = order.indexOf(lib.cursor);
+  const next = order[at < 0 ? (by > 0 ? 0 : order.length - 1) : Math.min(order.length - 1, Math.max(0, at + by))];
+  if (extend && lib.anchor && order.includes(lib.anchor)) {
+    const [a, b] = [order.indexOf(lib.anchor), order.indexOf(next)].sort((x, y) => x - y);
+    lib.sel = new Set(order.slice(a, b + 1));
+  } else {
+    lib.sel = new Set([next]);
+    lib.anchor = next;
+  }
+  lib.cursor = next;
+  markSelection();
+  const row = cursorRow();
+  row?.focus();
+  row?.scrollIntoView({ block: "nearest" });
+}
+
+function cursorRow() {
+  return [...$("rows").querySelectorAll("tr[data-select]")].find((tr) => tr.dataset.select === lib.cursor);
+}
+
+// Only one row is in the tab order: the cursor, or the first row while there
+// is none, so Tab enters the list once and the arrows move inside it.
+function tabStop() {
+  return entryAt(lib.cursor) ? lib.cursor : lib.folder?.entries[0]?.path;
+}
+
+function markRow(tr, stop) {
+  const p = tr.dataset.select;
+  const on = lib.sel.has(p);
+  tr.classList.toggle("sel", on);
+  tr.setAttribute("aria-selected", on);
+  tr.tabIndex = p === stop ? 0 : -1;
 }
 
 // markSelection updates the rows in place: rebuilding them would drop a
 // drag that is starting, and the second click of a double-click.
 function markSelection() {
-  for (const tr of $("rows").querySelectorAll("tr[data-select]")) tr.classList.toggle("sel", lib.sel.has(tr.dataset.select));
+  const stop = tabStop();
+  for (const tr of $("rows").querySelectorAll("tr[data-select]")) markRow(tr, stop);
   markToolbar();
 }
 
@@ -474,6 +561,7 @@ function startRename(p) {
   lib.edit = { kind: "rename", path: p, value: e.name, selStart: 0, selEnd: e.name.length - ext };
   lib.sel = new Set([p]);
   lib.anchor = p;
+  lib.cursor = p;
   renderLibrary();
 }
 
@@ -483,28 +571,46 @@ function cancelEdit() {
   renderLibrary();
 }
 
-async function commitEdit() {
-  const edit = lib.edit;
-  if (!edit || lib.busy) return;
-  if (edit.kind === "new") {
-    const res = await change("mkdir", { parent: lib.path, name: edit.value }, edit);
-    if (res) log(fill(t("log.created"), { name: edit.value }));
-    return;
+// exclusive runs one user action at a time. An action that asks first, or
+// waits on the Device, ignores a second trigger (a held key, a double click)
+// instead of stacking previews and dialogs.
+let acting = false;
+
+async function exclusive(run) {
+  if (acting) return undefined;
+  acting = true;
+  try {
+    return await run();
+  } finally {
+    acting = false;
   }
-  const e = entryAt(edit.path);
-  if (!e || edit.value === e.name) return cancelEdit();
-  const res = await withOpenConfirm(e.openNow, (confirmOpen) =>
-    change("rename", { path: edit.path, name: edit.value, confirmOpen }, edit));
-  if (!res) return;
-  lib.sel = new Set([lib.path ? `${lib.path}/${edit.value}` : edit.value]);
-  log(fill(t("log.renamed"), { from: e.name, to: edit.value }) + warnings(res));
-  renderLibrary();
+}
+
+function commitEdit() {
+  return exclusive(async () => {
+    const edit = lib.edit;
+    if (!edit || lib.busy) return;
+    if (edit.kind === "new") {
+      const res = await change("mkdir", { parent: lib.path, name: edit.value }, edit, edit.value);
+      if (res) log(fill(t("log.created"), { name: edit.value }));
+      return;
+    }
+    const e = entryAt(edit.path);
+    if (!e || edit.value === e.name) return cancelEdit();
+    const res = await withOpenConfirm(e.openNow, (confirmOpen) =>
+      change("rename", { path: edit.path, name: edit.value, confirmOpen }, edit, e.name));
+    if (!res) return;
+    const renamed = lib.path ? `${lib.path}/${edit.value}` : edit.value;
+    Object.assign(lib, { sel: new Set([renamed]), anchor: renamed, cursor: renamed });
+    log(fill(t("log.renamed"), { from: e.name, to: edit.value }) + warnings(res));
+    renderLibrary();
+  });
 }
 
 // change sends one write and shows the folder as the Device now has it. On
-// failure it logs why and resolves to null, keeping an edit open so the
-// name can be fixed.
-async function change(op, body, edit) {
+// failure it logs why, naming subject, and resolves to null, keeping an edit
+// open so the name can be fixed. Refusals the caller answers are rethrown.
+async function change(op, body, edit, subject) {
   lib.busy = true;
   renderLibrary();
   try {
@@ -513,8 +619,8 @@ async function change(op, body, edit) {
     applyChange(res);
     return res;
   } catch (err) {
-    if (err.code === "open_now_needs_confirm") throw err;
-    log(`${errorText(err)} ${err.code === "invalid_name" ? "" : err.message}`.trim());
+    if (err.code === "open_now_needs_confirm" || err.code === "move_incomplete") throw err;
+    log(errorText(err, subject), err.message);
     if (err.code === "not_found") refreshAfterChange();
     return null;
   } finally {
@@ -571,47 +677,94 @@ function counted(n, name) {
   return n === 1 ? name : `${n} ${t("folder.items")}`;
 }
 
-async function move(paths, to) {
-  if (lib.busy || !paths?.length) return;
-  const open = paths.some((p) => entryAt(p)?.openNow || (entryAt(p)?.kind === "folder" && lib.stats?.openNow?.startsWith(p + "/")));
-  const res = await withOpenConfirm(open, (confirmOpen) => change("move", { paths, to, confirmOpen }));
-  if (!res) return;
-  log(fill(t("log.moved"), { what: counted(paths.length, baseName(paths[0])), to: where(to) }) + warnings(res));
+function move(paths, to) {
+  return exclusive(async () => {
+    if (lib.busy || !paths?.length) return;
+    const what = counted(paths.length, baseName(paths[0]));
+    const open = paths.some((p) => entryAt(p)?.openNow || (entryAt(p)?.kind === "folder" && lib.stats?.openNow?.startsWith(p + "/")));
+    let res;
+    try {
+      res = await withOpenConfirm(open, (confirmOpen) => change("move", { paths, to, confirmOpen }, undefined, what));
+    } catch (err) {
+      if (err.code !== "move_incomplete") throw err;
+      return movedPart(err, to);
+    }
+    if (!res) return;
+    log(fill(t("log.moved"), { what, to: where(to) }) + warnings(res));
+  });
+}
+
+// listed names a few items for the log and counts the rest.
+function listed(names, max = 4) {
+  if (!names.length) return "—";
+  const shown = names.slice(0, max).join(", ");
+  return names.length > max ? `${shown} +${names.length - max}` : shown;
+}
+
+// movedPart shows a move the Device stopped halfway: what went is gone from
+// this folder and from the selection, what failed and after it stayed.
+function movedPart(err, to) {
+  const moved = err.data.moved ?? [];
+  for (const p of moved) lib.sel.delete(p);
+  if (err.data.folder) {
+    applyChange(err.data);
+  } else {
+    refreshAfterChange();
+    openFolder(lib.path);
+  }
+  log(fill(t("log.movePartial"), {
+    moved: listed(moved.map(baseName)),
+    failed: err.data.failed ? baseName(err.data.failed) : "—",
+    to: where(to),
+  }), err.message);
 }
 
 // remove asks first, showing what goes: Book and folder counts, the
 // progress that dies with the Books, and the open Book if it is among them.
-async function remove(paths) {
-  if (lib.busy || !paths.length) return;
-  let p;
-  try {
-    p = await api(`api/library/preview?${paths.map((x) => "path=" + encodeURIComponent(x)).join("&")}`);
-  } catch (err) {
-    return log(`${errorText(err)} ${err.message}`);
-  }
-  const what = counted(paths.length, baseName(paths[0]));
-  const body = [fill(t("dlg.deleteBody"), { what })];
-  const counts = el("div", { class: "counts" });
-  for (const [key, n] of [["dlg.books", p.books], ["dlg.folders", p.folders], ["dlg.others", p.others]]) {
-    if (n) counts.append(row(t(key), String(n)));
-  }
-  body.push(counts);
-  if (p.books) body.push(t("dlg.progressLost"));
-  body.push(t("dlg.cannotUndo"));
-  const ok = await ask({
-    title: fill(t("dlg.deleteTitle"), { what }),
-    body,
-    warn: p.openNow ? t("dlg.openDelete") : "",
-    ok: t("delete"),
+function remove(paths) {
+  return exclusive(async () => {
+    if (lib.busy || !paths.length) return;
+    const what = counted(paths.length, baseName(paths[0]));
+    let p;
+    try {
+      p = await api(`api/library/preview?${paths.map((x) => "path=" + encodeURIComponent(x)).join("&")}`);
+    } catch (err) {
+      return log(errorText(err, what), err.message);
+    }
+    const body = [fill(t("dlg.deleteBody"), { what })];
+    const counts = el("div", { class: "counts" });
+    for (const [key, n] of [["dlg.books", p.books], ["dlg.folders", p.folders], ["dlg.others", p.others]]) {
+      if (n) counts.append(row(t(key), String(n)));
+    }
+    body.push(counts);
+    if (p.books) body.push(t("dlg.progressLost"));
+    body.push(t("dlg.cannotUndo"));
+    const ok = await ask({
+      title: fill(t("dlg.deleteTitle"), { what }),
+      body,
+      warn: p.openNow ? t("dlg.openDelete") : "",
+      ok: t("delete"),
+    });
+    if (!ok) return;
+    // KOReader may have opened one of them since the preview.
+    const res = await withOpenConfirm(false, (confirmOpen) =>
+      change("delete", { paths, confirmOpen: p.openNow || confirmOpen }, undefined, what), t("dlg.openDelete"));
+    if (res) log(fill(t("log.deleted"), { what }) + warnings(res));
   });
-  if (!ok) return;
-  // KOReader may have opened one of them since the preview.
-  const res = await withOpenConfirm(false, (confirmOpen) => change("delete", { paths, confirmOpen: p.openNow || confirmOpen }), t("dlg.openDelete"));
-  if (res) log(fill(t("log.deleted"), { what }) + warnings(res));
 }
 
 // ask shows the confirm dialog and resolves to true when the user confirms.
-function ask({ title, body, warn, ok, cancel = t("cancel"), okClass = "danger" }) {
+// Asks wait their turn: one dialog is on screen at a time, and each answer
+// settles only the ask it was given to.
+let asking = Promise.resolve();
+
+function ask(opts) {
+  const turn = asking.then(() => showDialog(opts));
+  asking = turn.catch(() => {});
+  return turn;
+}
+
+function showDialog({ title, body, warn, ok, cancel = t("cancel"), okClass = "danger" }) {
   const d = $("dialog");
   $("dialog-title").textContent = title;
   const content = body.map((b) => typeof b === "string" ? el("p", {}, b) : b);
@@ -662,102 +815,122 @@ function settingsMessage(text, bad) {
   const m = $("set-msg");
   m.textContent = text;
   m.className = bad ? "set-msg bad" : "set-msg ok";
+  m.removeAttribute("title");
 }
 
 // The Library root is checked on the Kindle, so these errors read as answers
 // about the folder typed, not about a Book.
 const ROOT_ERRORS = { not_found: "set.err.rootMissing", not_folder: "set.err.rootNotFolder", not_linked: "set.err.rootNeedsLink" };
 
-async function saveSettings() {
-  const d = status.device;
-  if (!d) return;
-  const port = Number($("set-port").value);
-  if (!Number.isInteger(port)) return settingsMessage(t("err.badPort"), true);
-  const want = { libraryRoot: $("set-root").value.trim(), port, user: $("set-user").value.trim(), keepAwake: $("set-awake").checked };
-  const body = {};
-  for (const [k, v] of Object.entries(want)) if (v !== d[k]) body[k] = v;
-  if (!Object.keys(body).length) return settingsMessage(t("set.unchanged"), false);
-
-  $("set-save").disabled = true;
-  try {
-    const res = await api("api/settings", body);
-    const rootChanged = res.device.libraryRoot !== d.libraryRoot;
-    status.device = res.device;
-    fillSettings();
-    settingsMessage(t("set.saved"), false);
-    log(t("log.settingsSaved"));
-    if (rootChanged) {
-      Object.assign(lib, { path: "", folder: null, stats: null, children: new Map(), expanded: new Set([""]), sel: new Set(), anchor: null, edit: null });
-      history.replaceState(null, "", location.pathname);
-      if (conn.phase === "linked") refreshLibrary();
+function saveSettings() {
+  return exclusive(async () => {
+    const d = status.device;
+    if (!d) return;
+    const port = Number($("set-port").value);
+    if (!Number.isInteger(port)) return settingsMessage(t("err.badPort"), true);
+    const want = { libraryRoot: $("set-root").value.trim(), port, user: $("set-user").value.trim(), keepAwake: $("set-awake").checked };
+    const body = {};
+    for (const [k, v] of Object.entries(want)) if (v !== d[k]) body[k] = v;
+    if (!Object.keys(body).length) return settingsMessage(t("set.unchanged"), false);
+    // Queued uploads name folders of the current root; under a new one they
+    // would land somewhere else.
+    if ("libraryRoot" in body && uploadsActive()) {
+      const ok = await ask({ title: t("dlg.uploadsTitle"), body: [t("dlg.uploadsRoot")], ok: t("dlg.uploadsStop") });
+      if (!ok) return settingsMessage(t("set.uploadsKept"), true);
+      stopUploads();
     }
-  } catch (err) {
-    settingsMessage(t(ROOT_ERRORS[err.code] ?? ERRORS[err.code] ?? "err.internal"), true);
-  } finally {
-    $("set-save").disabled = false;
-    render();
-  }
+
+    $("set-save").disabled = true;
+    try {
+      const res = await api("api/settings", body);
+      const rootChanged = res.device.libraryRoot !== d.libraryRoot;
+      status.device = res.device;
+      fillSettings();
+      settingsMessage(t("set.saved"), false);
+      log(t("log.settingsSaved"));
+      if (rootChanged) {
+        resetLibrary();
+        if (conn.phase === "linked") refreshLibrary();
+      }
+    } catch (err) {
+      const root = ROOT_ERRORS[err.code];
+      settingsMessage(root ? t(root) : errorText(err), true);
+      $("set-msg").title = err.message;
+    } finally {
+      $("set-save").disabled = false;
+      render();
+    }
+  });
 }
 
 // Turning passwordless mode on is two requests with the user's answer in
 // between: the server hands out a one-time token, and only a confirm
 // carrying it switches the mode on. Turning it off is one click.
-async function togglePasswordless() {
-  try {
-    if (status.device?.passwordless) {
-      status.device = (await api("api/settings/passwordless/off", {})).device;
-      log(t("log.pwdOff"));
-      return;
+function togglePasswordless() {
+  return exclusive(async () => {
+    try {
+      if (status.device?.passwordless) {
+        status.device = (await api("api/settings/passwordless/off", {})).device;
+        log(t("log.pwdOff"));
+        return;
+      }
+      const { token } = await api("api/settings/passwordless/request", {});
+      const ok = await ask({
+        title: t("pwd.dlgTitle"),
+        body: [t("pwd.dlgBody"), t("pwd.dlgKindle")],
+        warn: t("pwd.dlgWarn"),
+        ok: t("pwd.dlgOk"),
+      });
+      if (!ok) return log(t("log.pwdKept"));
+      status.device = (await api("api/settings/passwordless/confirm", { token })).device;
+      log(t("log.pwdOn"));
+    } catch (err) {
+      log(errorText(err), err.message);
+    } finally {
+      render();
     }
-    const { token } = await api("api/settings/passwordless/request", {});
-    const ok = await ask({
-      title: t("pwd.dlgTitle"),
-      body: [t("pwd.dlgBody"), t("pwd.dlgKindle")],
-      warn: t("pwd.dlgWarn"),
-      ok: t("pwd.dlgOk"),
-    });
-    if (!ok) return log(t("log.pwdKept"));
-    status.device = (await api("api/settings/passwordless/confirm", { token })).device;
-    log(t("log.pwdOn"));
-  } catch (err) {
-    log(errorText(err));
-  } finally {
-    render();
-  }
-}
-
-async function forget() {
-  const ok = await ask({
-    title: t("forget.dlgTitle"),
-    body: [t("forget.dlgBody"), t("forget.dlgKey")],
-    ok: t("forget.button"),
   });
-  if (!ok) return;
-  try {
-    await api("api/settings/forget", { confirm: true });
-  } catch (err) {
-    return log(errorText(err));
-  }
-  Object.assign(status, { state: "unpaired", device: null });
-  Object.assign(pairing, { view: "start", candidates: [], error: null, locked: false });
-  Object.assign(lib, { path: "", folder: null, stats: null, children: new Map(), expanded: new Set([""]), sel: new Set(), anchor: null, edit: null });
-  ui.settings = false;
-  history.replaceState(null, "", location.pathname);
-  // ember made a new key pair; the old one shown for USB is void.
-  $("pubkey").textContent = "";
-  log(t("log.forgotten"));
-  render();
 }
 
-function log(text) {
+function forget() {
+  return exclusive(async () => {
+    const ok = await ask({
+      title: t("forget.dlgTitle"),
+      body: [t("forget.dlgBody"), t("forget.dlgKey")],
+      warn: uploadsActive() ? t("dlg.uploadsForget") : "",
+      ok: t("forget.button"),
+    });
+    if (!ok) return;
+    stopUploads();
+    try {
+      await api("api/settings/forget", { confirm: true });
+    } catch (err) {
+      return log(errorText(err), err.message);
+    }
+    Object.assign(status, { state: "unpaired", device: null });
+    Object.assign(pairing, { view: "start", candidates: [], error: null, locked: false, address: "" });
+    resetLibrary();
+    ui.settings = false;
+    // ember made a new key pair; the old one shown for USB is void.
+    for (const k of document.querySelectorAll(".pubkey")) k.textContent = "";
+    log(t("log.forgotten"));
+    render();
+  });
+}
+
+// log shows one line in the wire. detail, the server's own words, stays out
+// of the text and is kept on hover.
+function log(text, detail) {
   const e = $("log");
   delete e.dataset.i18n;
   e.textContent = text;
+  if (detail) e.title = detail;
+  else e.removeAttribute("title");
 }
 
 function fail(err) {
-  pairing.error = { code: err.code ?? "internal", message: err.message };
-  log(err.message);
+  pairing.error = err;
+  log(errorText(err), err.message);
   render();
 }
 
@@ -789,20 +962,69 @@ async function search(address) {
   }
 }
 
-async function confirm(address, fingerprint) {
-  pairing.error = null;
-  pairing.view = "installing";
-  render();
-  try {
-    const res = await api("api/pair/confirm", { address, fingerprint });
-    Object.assign(status, { state: "paired", device: res.device });
-    pairing.view = "lock";
-    log(t("log.paired"));
+// confirm pins the candidate's host key. A Kindle with passwordless login on
+// gets ember's key installed through it; one without, or a user who took the
+// USB route, gets ember waiting for the key to be copied over by hand.
+function confirm(address, fingerprint, passwordless) {
+  return exclusive(async () => {
+    const keyOnly = $("usb").open || !passwordless;
+    pairing.error = null;
+    pairing.view = keyOnly ? "awaiting" : "installing";
+    pairing.address = address;
     render();
-    watchLock();
-  } catch (err) {
-    pairing.view = "found";
-    fail(err);
+    try {
+      const res = await api("api/pair/confirm", { address, fingerprint, ...(keyOnly && { keyOnly: true }) });
+      if (keyOnly) {
+        awaitKey(res);
+        return;
+      }
+      Object.assign(status, { state: "paired", device: res.device });
+      pairing.view = "lock";
+      log(t("log.paired"));
+      render();
+      watchLock();
+    } catch (err) {
+      pairing.view = "found";
+      fail(err);
+    }
+  });
+}
+
+// awaitKey shows the key and polls while ember tries a key-only login in the
+// background: done means the Profile is saved, found means it gave up.
+async function awaitKey(s) {
+  pairing.view = "awaiting";
+  pairing.address = s.address || pairing.address;
+  showPublicKey();
+  render();
+  while (pairing.view === "awaiting") {
+    await sleep(1500);
+    if (pairing.view !== "awaiting") return;
+    try {
+      s = await api("api/pair");
+    } catch (err) {
+      log(errorText(err), err.message);
+      continue;
+    }
+    if (pairing.view !== "awaiting" || s.phase === "awaiting_key") continue;
+    if (s.phase === "done") {
+      try {
+        Object.assign(status, await api("api/status"));
+      } catch (err) {
+        log(errorText(err), err.message);
+        continue;
+      }
+      pairing.view = "done";
+      log(t("log.paired"));
+      render();
+      return;
+    }
+    pairing.view = s.phase === "scanning" ? "scanning" : "found";
+    pairing.candidates = s.candidates ?? [];
+    if (s.error) fail(new APIError(s.error, ""));
+    else render();
+    if (s.phase === "scanning") waitForScan().catch(fail);
+    return;
   }
 }
 
@@ -825,7 +1047,8 @@ async function watchLock() {
 async function showPublicKey() {
   if ($("pubkey").textContent) return;
   try {
-    $("pubkey").textContent = (await api("api/pair/key", {})).publicKey;
+    const { publicKey } = await api("api/pair/key", {});
+    for (const k of document.querySelectorAll(".pubkey")) k.textContent = publicKey;
   } catch (err) {
     fail(err);
   }
@@ -833,7 +1056,7 @@ async function showPublicKey() {
 
 document.addEventListener("click", (e) => {
   const lang = e.target.closest("[data-lang]");
-  if (lang) return setLang(lang.dataset.lang).catch((err) => log(err.message));
+  if (lang) return changeLang(lang.dataset.lang);
 
   const b = e.target.closest("[data-action]");
   if (!b) {
@@ -858,13 +1081,13 @@ document.addEventListener("click", (e) => {
     case "passwordless": return togglePasswordless();
     case "forget": return forget();
     case "search": return search("");
-    case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint);
+    case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint, b.dataset.passwordless === "true");
     case "finish":
       pairing.view = "done";
       return render();
     case "copy":
       return navigator.clipboard.writeText($("pubkey").textContent)
-        .then(() => log(t("log.copied")), (err) => log(err.message));
+        .then(() => log(t("log.copied")), (err) => log(t("err.copy"), err.message));
   }
 });
 
@@ -904,14 +1127,31 @@ $("rows").addEventListener("focusout", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if ($("library").hidden || $("dialog").open || e.target.closest("input, textarea")) return;
+  if ($("library").hidden || $("dialog").open || e.target.closest("input, textarea, select")) return;
   // A Mac's delete key sends Backspace; Cmd+Backspace is Finder's delete.
   if (e.key === "Delete" || e.key === "Backspace") {
     e.preventDefault();
-    if (lib.sel.size) remove([...lib.sel]);
+    if (lib.sel.size && !e.repeat) remove([...lib.sel]);
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // The arrows work from a row or from nowhere in particular, not while a
+  // button in the toolbar or the tree has the focus.
+  const inList = e.target === document.body || e.target.matches("#rows tr[data-select]");
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && inList) {
+    e.preventDefault();
+    step(e.key === "ArrowDown" ? 1 : -1, e.shiftKey);
+    return;
+  }
+  // Enter does what a double-click on the name would most want: a folder
+  // opens, a file downloads, as GET does.
+  if (e.key === "Enter" && e.target.matches("#rows tr[data-select]")) {
+    e.preventDefault();
+    const entry = entryAt(e.target.dataset.select);
+    if (entry?.kind === "folder") openFolder(entry.path);
+    else if (entry) download(entry);
+    return;
+  }
   if (e.key === "n" || e.key === "N") {
     e.preventDefault();
     startNewFolder();
@@ -929,6 +1169,9 @@ function where(p) {
   return p ? baseName(p) : `/ ${baseName(status.device?.libraryRoot ?? "")}`;
 }
 
+// A HEAD answer carries no body, so its status stands in for the code.
+const HEAD_ERRORS = { 404: "not_found", 409: "not_file", 502: "unreachable", 503: "not_linked" };
+
 // download hands the file to the browser's own download manager, which
 // streams it to disk. The HEAD first turns a refusal into a log line instead
 // of a saved error page.
@@ -936,7 +1179,8 @@ async function download(e) {
   if (!e) return;
   const url = `api/library/download?path=${encodeURIComponent(e.path)}`;
   const res = await fetch(url, { method: "HEAD" }).catch(() => null);
-  if (!res?.ok) return log(`${t(res ? "err.notFound" : "err.unreachable")} ${e.name}`);
+  if (!res) return log(errorText(new APIError("server_down", "")));
+  if (!res.ok) return log(errorText(new APIError(HEAD_ERRORS[res.status] ?? "internal", ""), e.name), `HTTP ${res.status}`);
   const a = el("a", { href: url, download: e.name });
   document.body.append(a);
   a.click();
@@ -979,7 +1223,7 @@ async function uploadOne(it) {
   }
   if (it.state !== "checking") return;
   it.book = a.book;
-  if (a.reason) return failItem(it, t(`err.name.${a.reason}`));
+  if (a.reason) return failItem(it, errorText(new APIError("invalid_name", "", { reason: a.reason })));
   if (!a.fits) return failItem(it, fill(t("up.noSpace"), { size: bytes(it.size), free: bytes(a.freeBytes) }));
   let replace = false;
   if (a.existing) {
@@ -1053,6 +1297,16 @@ function failItem(it, why) {
   log(fill(t("log.uploadFailed"), { name: it.name, why }));
 }
 
+function uploadsActive() {
+  return uploads.items.some((x) => !FINISHED.has(x.state));
+}
+
+// stopUploads cancels everything not finished: the file being sent is
+// aborted, the rest never start.
+function stopUploads() {
+  for (const it of uploads.items) cancelUpload(it.id);
+}
+
 function cancelUpload(id) {
   const it = uploads.items.find((x) => x.id === id);
   if (!it || FINISHED.has(it.state)) return;
@@ -1080,7 +1334,8 @@ function renderQueueHead() {
 }
 
 // Rows are built once and updated in place, so a cancel button stays under
-// the pointer while progress events arrive.
+// the pointer while progress events arrive. This runs only when items are
+// added or cleared; everything else goes through fillRow.
 function renderQueue() {
   $("queue").hidden = uploads.items.length === 0;
   $("queue-rows").replaceChildren(...uploads.items.map((it) => {
@@ -1216,7 +1471,7 @@ $("settings-form").addEventListener("submit", (e) => {
 });
 
 $("set-lang").addEventListener("change", (e) => {
-  setLang(e.target.value).catch((err) => log(err.message));
+  changeLang(e.target.value);
 });
 
 $("usb").addEventListener("toggle", (e) => {
@@ -1227,18 +1482,21 @@ $("usb").addEventListener("toggle", (e) => {
 // reconnects it on its own if ember restarts.
 function listen() {
   const events = new EventSource("api/events");
+  // After the stream broke, ember may have restarted or the Library changed
+  // unseen, so the first state that arrives while linked reads it again.
+  let stale = false;
   events.addEventListener("state", (e) => {
     const was = conn.phase;
     Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false, keepAwake: "" }, JSON.parse(e.data), { online: true });
-    if (was !== "linked" && conn.phase === "linked") {
-      log(`${t("log.linked")} ${conn.address}`);
-      refreshLibrary();
-    }
+    if (was !== "linked" && conn.phase === "linked") log(`${t("log.linked")} ${conn.address}`);
+    if (conn.phase === "linked" && (was !== "linked" || stale)) refreshLibrary();
     if (was === "linked" && conn.phase !== "linked") log(t("log.lost"));
+    stale = false;
     render();
   });
   events.addEventListener("error", () => {
     conn.online = false;
+    stale = true;
     render();
   });
 }
@@ -1250,6 +1508,8 @@ async function start() {
   if (s.phase === "lock") {
     pairing.view = "lock";
     watchLock();
+  } else if (s.phase === "awaiting_key") {
+    awaitKey(s);
   } else if (status.state === "paired") {
     pairing.view = "done";
   } else if (s.phase === "scanning") {
@@ -1258,9 +1518,10 @@ async function start() {
   } else if (s.phase === "found") {
     pairing.view = "found";
     pairing.candidates = s.candidates;
+    if (s.error) pairing.error = new APIError(s.error, "");
   }
   render();
   listen();
 }
 
-start().catch((err) => log(err.message));
+start().catch((err) => log(errorText(err), err.message));
