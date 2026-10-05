@@ -127,11 +127,15 @@ func routePairing(mux *http.ServeMux, flow *pairing.Flow) {
 // decode reads a small JSON body into v. Requiring the JSON content type
 // keeps plain HTML forms, which cannot set it, from reaching the handler.
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeMax(w, r, v, 4<<10)
+}
+
+func decodeMax(w http.ResponseWriter, r *http.Request, v any, max int64) bool {
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
 		writeErrorCode(w, http.StatusUnsupportedMediaType, "bad_request", "expected application/json")
 		return false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, max))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -146,6 +150,7 @@ func writeError(w http.ResponseWriter, err error) {
 	var mismatch *device.HostKeyMismatchError
 	var netErr net.Error
 	var opErr *net.OpError
+	var nameErr *library.NameError
 	switch {
 	case errors.As(err, &mismatch):
 		writeErrorCode(w, http.StatusConflict, "host_key_mismatch", err.Error())
@@ -167,6 +172,24 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusConflict, "not_paired", err.Error())
 	case errors.Is(err, connector.ErrNotLinked):
 		writeErrorCode(w, http.StatusServiceUnavailable, "not_linked", err.Error())
+	case errors.Is(err, errNoPaths):
+		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.As(err, &nameErr):
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "invalid_name", "reason": nameErr.Reason, "message": err.Error()})
+	case errors.Is(err, library.ErrPartial):
+		writeErrorCode(w, http.StatusInternalServerError, "partial_failure", err.Error())
+	case errors.Is(err, library.ErrExists):
+		writeErrorCode(w, http.StatusConflict, "collision", err.Error())
+	case errors.Is(err, library.ErrOpenNow):
+		writeErrorCode(w, http.StatusConflict, "open_now_needs_confirm", err.Error())
+	case errors.Is(err, library.ErrMetadataMode):
+		writeErrorCode(w, http.StatusConflict, "metadata_mode_unsupported", err.Error())
+	case errors.Is(err, library.ErrIntoItself):
+		writeErrorCode(w, http.StatusConflict, "into_itself", err.Error())
+	case errors.Is(err, library.ErrRoot):
+		writeErrorCode(w, http.StatusBadRequest, "library_root", err.Error())
+	case errors.Is(err, library.ErrExtension):
+		writeErrorCode(w, http.StatusBadRequest, "extension_change", err.Error())
 	case errors.Is(err, library.ErrOutside):
 		writeErrorCode(w, http.StatusBadRequest, "outside_library", err.Error())
 	case errors.Is(err, library.ErrNotFound):

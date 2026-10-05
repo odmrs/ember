@@ -246,6 +246,22 @@ func (d *Device) MkdirAll(path string, perm fs.FileMode) error {
 	return nil
 }
 
+// Mkdir creates one directory and fails if path already exists.
+func (d *Device) Mkdir(path string) error {
+	return d.sftp.Mkdir(path)
+}
+
+// Rename uses the plain SFTP rename, never posix-rename, which replaces an
+// existing target by design.
+func (d *Device) Rename(from, to string) error {
+	return d.sftp.Rename(from, to)
+}
+
+// Remove deletes a file, a symbolic link itself, or an empty directory.
+func (d *Device) Remove(path string) error {
+	return d.sftp.Remove(path)
+}
+
 // Append adds data to the end of path, creating the file with mode perm if it
 // does not exist. Existing content is never truncated.
 func (d *Device) Append(path string, data []byte, perm fs.FileMode) error {

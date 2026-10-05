@@ -393,6 +393,10 @@ func (d *dirFS) FreeSpace(p string) (free, total uint64, err error) {
 	return 750, 1000, nil
 }
 
+func (d *dirFS) Mkdir(p string) error         { return os.Mkdir(d.Path(p), 0o755) }
+func (d *dirFS) Rename(from, to string) error { return os.Rename(d.Path(from), d.Path(to)) }
+func (d *dirFS) Remove(p string) error        { return os.Remove(d.Path(p)) }
+
 func (d *dirFS) RealPath(p string) (string, error) {
 	p = path.Clean("/" + p)
 	base, err := filepath.EvalSymlinks(d.root)

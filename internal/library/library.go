@@ -34,6 +34,14 @@ type FS interface {
 	RealPath(path string) (string, error)
 	ReadFile(path string, max int64) ([]byte, error)
 	FreeSpace(path string) (free, total uint64, err error)
+	// Mkdir creates one directory; it fails if path exists.
+	Mkdir(path string) error
+	// Rename moves a file or directory. It may replace an existing target,
+	// so the Library checks for one first.
+	Rename(from, to string) error
+	// Remove deletes a file, a link (never what it points to) or an empty
+	// directory.
+	Remove(path string) error
 }
 
 // Errors returned for Library paths.
@@ -113,13 +121,9 @@ const countWorkers = 8
 // bytes are refused outright, and so is anything that resolves outside the
 // root. The last component does not have to exist.
 func (l *Library) Resolve(rel string) (string, error) {
-	if strings.HasPrefix(rel, "/") || strings.ContainsAny(rel, "\\\x00") {
-		return "", ErrOutside
-	}
-	for _, part := range strings.Split(rel, "/") {
-		if part == ".." {
-			return "", ErrOutside
-		}
+	rel, err := clean(rel)
+	if err != nil {
+		return "", err
 	}
 	realRoot, err := l.realRoot()
 	if err != nil {
@@ -134,6 +138,28 @@ func (l *Library) Resolve(rel string) (string, error) {
 		return "", ErrOutside
 	}
 	return real, nil
+}
+
+// clean refuses what Resolve refuses before asking the Device anything, and
+// returns rel without leading, trailing or doubled slashes.
+func clean(rel string) (string, error) {
+	if strings.HasPrefix(rel, "/") || strings.ContainsAny(rel, "\\\x00") {
+		return "", ErrOutside
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if part == ".." {
+			return "", ErrOutside
+		}
+	}
+	return strings.Trim(path.Clean("/"+rel), "/"), nil
+}
+
+// parent is the Library path of the folder holding rel.
+func parent(rel string) string {
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		return rel[:i]
+	}
+	return ""
 }
 
 func (l *Library) realRoot() (string, error) {
@@ -159,23 +185,11 @@ func deviceErr(err error) error {
 // List lists the folder at rel. Sidecars, hidden files and links are left
 // out; subfolders are counted so the dashboard can show their size.
 func (l *Library) List(rel string) (Folder, error) {
-	dir, err := l.Resolve(rel)
+	dir, infos, err := l.readFolder(rel)
 	if err != nil {
 		return Folder{}, err
 	}
-	fi, err := l.fs.Stat(dir)
-	if err != nil {
-		return Folder{}, deviceErr(err)
-	}
-	if !fi.IsDir() {
-		return Folder{}, ErrNotFolder
-	}
-	infos, err := l.fs.ReadDir(dir)
-	if err != nil {
-		return Folder{}, deviceErr(err)
-	}
-
-	rel = strings.Trim(path.Clean("/"+rel), "/")
+	rel, _ = clean(rel)
 	open := lastFile(l.settings())
 	sidecars := map[string]bool{}
 	for _, fi := range infos {
