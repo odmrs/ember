@@ -3,3 +3,8 @@
 /dist/
 *.log
 .DS_Store
+
+# working notes, never published
+/CONTEXT.md
+/.scratch/
+/_harness/

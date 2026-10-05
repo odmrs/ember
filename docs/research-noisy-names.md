@@ -63,10 +63,10 @@ Seen, but left out of the tests because they are not Books ember would clean:
 - **Standard Ebooks**: `author-slug_title-slug_extra.epub`, all lower case.
 - **Calibre**: `Title - Author.ext`, with `_` for characters the file system refuses and a `(N)` book id on clashes.
 
-## Rules (from the ticket) and the judgment calls they forced
+## Rules and the judgment calls they forced
 
-The ticket settles the format, the order of sources, the author rules and what to drop. Where a corpus name
-needed a call the ticket does not make, the call is listed here and encoded as that row's expectation.
+The design settles the format, the order of sources, the author rules and what to drop. Where a corpus name
+needed a call the design does not make, the call is listed here and encoded as that row's expectation.
 
 1. **A name that already reads clean is not touched, not even with metadata.** If neither a site pattern
    nor the generic cleanup changes anything (`Dune.epub`, `Dune - Frank Herbert.epub`), there is nothing
@@ -74,7 +74,7 @@ needed a call the ticket does not make, the call is listed here and encoded as t
 2. **Bare `A - B` keeps its order.** Without a site pattern, ember cannot tell `Title - Author` (Calibre)
    from `Author - Title` (libgen, many users), so each part is cleaned in place and none is swapped
    (rows 93, 103, 105, 111).
-3. **Series in brackets stay.** The ticket lists year, edition, publisher, ISBN, hash and source tags; a
+3. **Series in brackets stay.** The design lists year, edition, publisher, ISBN, hash and source tags; a
    series is none of these. `(Asesino de Brujas, 3)`, `[Sam Wyndham 001]` and `(FGV Management)` are kept.
    Imprints in brackets (`(Perennial Classics)`, `(Delphi Classics)`) count as publisher and go.
 4. **A colon always cuts a subtitle; a dash only when what follows is plainly one** (`- A Novel`). This
