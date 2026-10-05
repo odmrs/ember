@@ -99,6 +99,24 @@
     </span>
   </section>
 
+  <section class="box connect" id="connect" hidden>
+    <div class="connect-body">
+      <div class="label" data-i18n="conn.title"></div>
+      <div class="n" id="conn-attempt">#0</div>
+      <div class="dim" id="conn-line"></div>
+      <div class="conn-fail" id="conn-fail" role="status" hidden>
+        <div class="label" id="conn-warning" data-i18n="conn.securityWarning" hidden></div>
+        <p id="conn-fail-text"></p>
+      </div>
+      <p class="dim conn-scan" id="conn-scan" data-i18n="conn.scanning" hidden></p>
+      <ol class="conn-steps">
+        <li data-i18n="conn.step1"></li>
+        <li data-i18n="conn.step2"></li>
+        <li data-i18n="conn.step3"></li>
+      </ol>
+    </div>
+  </section>
+
   <main class="main" id="library">
     <section class="box">
       <div class="head"><span class="label" data-i18n="library"></span></div>
@@ -115,8 +133,8 @@
         </div>
       </div>
       <div class="empty" id="empty">
-        <div class="label" data-i18n="pairedTitle"></div>
-        <p class="dim" data-i18n="pairedBody"></p>
+        <div class="label" data-i18n="linkedTitle"></div>
+        <p class="dim" data-i18n="linkedBody"></p>
       </div>
     </section>
   </main>
