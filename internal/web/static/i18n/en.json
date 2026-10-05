@@ -17,8 +17,6 @@
   "state.searching": "SEARCHING",
   "state.linked": "LINKED",
   "state.offline": "OFFLINE",
-  "linkedTitle": "Kindle linked",
-  "linkedBody": "ember is connected to your Kindle. Browsing the library comes next.",
   "conn.title": "Searching for your Kindle",
   "conn.retry": "retry every 2s",
   "conn.step1": "Wake the Kindle and open KOReader",
@@ -85,5 +83,18 @@
   "err.badAddress": "That address is not valid.",
   "err.alreadyPaired": "A Kindle is already paired.",
   "err.unreachable": "The Kindle did not answer.",
-  "err.internal": "Something went wrong."
+  "err.internal": "Something went wrong.",
+  "col.name": "Name",
+  "col.size": "Size",
+  "openNow": "OPEN NOW",
+  "emptyFolder": "This folder is empty.",
+  "folder.item": "item",
+  "folder.items": "items",
+  "folder.empty": "empty",
+  "otherHint": "Not a book format KOReader opens",
+  "err.notPaired": "No Kindle is paired.",
+  "err.notLinked": "The Kindle is not linked right now.",
+  "err.outsideLibrary": "That path is outside the library.",
+  "err.notFound": "Not found on the Kindle:",
+  "err.notFolder": "Not a folder:"
 }
