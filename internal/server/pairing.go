@@ -151,6 +151,7 @@ func writeError(w http.ResponseWriter, err error) {
 	var netErr net.Error
 	var opErr *net.OpError
 	var nameErr *library.NameError
+	var noSpace *library.NoSpaceError
 	switch {
 	case errors.As(err, &mismatch):
 		writeErrorCode(w, http.StatusConflict, "host_key_mismatch", err.Error())
@@ -174,6 +175,12 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusServiceUnavailable, "not_linked", err.Error())
 	case errors.Is(err, errNoPaths):
 		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.As(err, &noSpace):
+		writeJSONStatus(w, http.StatusInsufficientStorage, map[string]any{"error": "no_space", "need": noSpace.Need, "free": noSpace.Free, "message": err.Error()})
+	case errors.Is(err, library.ErrIncomplete):
+		writeErrorCode(w, http.StatusBadRequest, "incomplete", err.Error())
+	case errors.Is(err, library.ErrNotFile):
+		writeErrorCode(w, http.StatusConflict, "not_file", err.Error())
 	case errors.As(err, &nameErr):
 		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "invalid_name", "reason": nameErr.Reason, "message": err.Error()})
 	case errors.Is(err, library.ErrPartial):

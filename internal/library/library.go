@@ -12,6 +12,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"path"
 	"slices"
@@ -42,6 +43,12 @@ type FS interface {
 	// Remove deletes a file, a link (never what it points to) or an empty
 	// directory.
 	Remove(path string) error
+	// Create writes src into path, creating or truncating the file, and
+	// returns the bytes read from src. It streams: nothing holds the whole
+	// file in memory.
+	Create(path string, src io.Reader) (int64, error)
+	// Open opens a file for reading.
+	Open(path string) (io.ReadCloser, error)
 }
 
 // Errors returned for Library paths.

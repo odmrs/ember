@@ -24,6 +24,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// The fake's file system is 1 GiB, with DefaultFree of it free until
+// SetFreeSpace says otherwise.
+const (
+	TotalSpace  = 1 << 30
+	DefaultFree = 3 << 28
+)
+
 // Banner is the version string the fake announces.
 const Banner = "SSH-2.0-dropbear_2022.83"
 
@@ -44,6 +51,7 @@ type Device struct {
 	keys    []ssh.Signer
 	pwdless atomic.Bool
 	mute    atomic.Bool
+	free    atomic.Uint64
 	wg      sync.WaitGroup
 
 	mu    sync.Mutex
@@ -83,6 +91,7 @@ func New(t testing.TB, opts ...Option) *Device {
 		root:  t.TempDir(),
 		keys:  []ssh.Signer{mustSigner(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))), mustSigner(ecKey)},
 	}
+	d.free.Store(DefaultFree)
 	for _, o := range opts {
 		o(d)
 	}
@@ -171,6 +180,10 @@ func (d *Device) Start() {
 // staying open, like a Device that dropped off Wi-Fi without closing them.
 // New connections still log in.
 func (d *Device) SetUnresponsive(on bool) { d.mute.Store(on) }
+
+// SetFreeSpace changes the free bytes the fake reports, rounded down to
+// whole 4 KiB blocks as a real file system reports them.
+func (d *Device) SetFreeSpace(free uint64) { d.free.Store(free) }
 
 // HostKey is the ed25519 host key the fake presents.
 func (d *Device) HostKey() ssh.PublicKey { return d.keys[0].PublicKey() }
@@ -300,7 +313,7 @@ func (d *Device) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				continue
 			}
 			_ = req.Reply(true, nil)
-			srv := sftp.NewRequestServer(ch, handlers(&files{root: d.root}))
+			srv := sftp.NewRequestServer(ch, handlers(&files{root: d.root, free: &d.free}))
 			_ = srv.Serve()
 			srv.Close()
 			return

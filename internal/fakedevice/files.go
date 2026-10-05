@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pkg/sftp"
 )
@@ -15,7 +16,10 @@ import (
 // files serves SFTP requests from a host directory standing in for the
 // Device's root. Every request path is cleaned as an absolute path before it
 // is joined to root, so ".." cannot climb out of it.
-type files struct{ root string }
+type files struct {
+	root string
+	free *atomic.Uint64
+}
 
 func handlers(f *files) sftp.Handlers {
 	return sftp.Handlers{FileGet: f, FilePut: f, FileCmd: f, FileList: f}
@@ -68,8 +72,9 @@ func (f *files) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
 	if _, err := os.Stat(f.host(r.Filepath)); err != nil {
 		return nil, err
 	}
-	// A 1 GiB file system with 3/4 free, in 4 KiB blocks.
-	return &sftp.StatVFS{Bsize: 4096, Frsize: 4096, Blocks: 262144, Bfree: 196608, Bavail: 196608, Namemax: 255}, nil
+	const block = 4096
+	free := f.free.Load() / block
+	return &sftp.StatVFS{Bsize: block, Frsize: block, Blocks: TotalSpace / block, Bfree: free, Bavail: free, Namemax: 255}, nil
 }
 
 func (f *files) Filelist(r *sftp.Request) (sftp.ListerAt, error) {

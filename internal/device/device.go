@@ -18,6 +18,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// maxInFlight bounds the SFTP requests a transfer keeps outstanding: 512 KiB
+// of 32 KiB packets. That still covers the round trip of a Kindle on Wi-Fi,
+// and keeps the queue short enough that the Connector's keepalive, which
+// waits behind it, is answered in time on a slow link.
+const maxInFlight = 16
+
 // passwordlessSecret is what ember types when KOReader's "Login without
 // password" is on. The Device accepts any password in that mode, so this is
 // not a secret.
@@ -90,7 +96,7 @@ func Dial(ctx context.Context, cfg Config) (*Device, error) {
 	case err != nil:
 		return nil, err
 	}
-	sc, err := sftp.NewClient(client)
+	sc, err := sftp.NewClient(client, sftp.MaxConcurrentRequestsPerFile(maxInFlight))
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("device: sftp: %w", err)
@@ -255,6 +261,29 @@ func (d *Device) Mkdir(path string) error {
 // existing target by design.
 func (d *Device) Rename(from, to string) error {
 	return d.sftp.Rename(from, to)
+}
+
+// Create writes src into path, creating the file or truncating it, and
+// returns how many bytes it read from src. Data is sent in packets with
+// several requests in flight, which is what makes SFTP fast over Wi-Fi;
+// memory stays bounded by those packets whatever the size of src. After an error the file
+// may hold any part of what was read, holes included.
+func (d *Device) Create(path string, src io.Reader) (int64, error) {
+	f, err := d.sftp.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	if err != nil {
+		return 0, err
+	}
+	n, err := f.ReadFromWithConcurrency(src, 0)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
+}
+
+// Open opens a file for reading. Copying from it with io.Copy reads with
+// several requests in flight.
+func (d *Device) Open(path string) (io.ReadCloser, error) {
+	return d.sftp.Open(path)
 }
 
 // Remove deletes a file, a symbolic link itself, or an empty directory.

@@ -2,10 +2,12 @@ package server
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 
 	"github.com/odmrs/ember/internal/connector"
+	"github.com/odmrs/ember/internal/device"
 	"github.com/odmrs/ember/internal/library"
 	"github.com/odmrs/ember/internal/pairing"
 )
@@ -28,8 +30,9 @@ type opResult struct {
 // package decides what they may reach. Reads are GETs, every change is a
 // POST, so the same-origin guard covers all of them.
 func routeLibrary(mux *http.ServeMux, flow *pairing.Flow, conn *connector.Connector) {
+	a := &access{flow: flow, conn: conn}
 	mux.HandleFunc("GET /api/library/folder", func(w http.ResponseWriter, r *http.Request) {
-		lib, err := openLibrary(flow, conn)
+		lib, err := a.open()
 		if err != nil {
 			writeError(w, err)
 			return
@@ -43,7 +46,7 @@ func routeLibrary(mux *http.ServeMux, flow *pairing.Flow, conn *connector.Connec
 	})
 
 	mux.HandleFunc("GET /api/library/stats", func(w http.ResponseWriter, r *http.Request) {
-		lib, err := openLibrary(flow, conn)
+		lib, err := a.open()
 		if err != nil {
 			writeError(w, err)
 			return
@@ -62,7 +65,7 @@ func routeLibrary(mux *http.ServeMux, flow *pairing.Flow, conn *connector.Connec
 			writeErrorCode(w, http.StatusBadRequest, "bad_request", "no path")
 			return
 		}
-		lib, err := openLibrary(flow, conn)
+		lib, err := a.open()
 		if err != nil {
 			writeError(w, err)
 			return
@@ -75,26 +78,25 @@ func routeLibrary(mux *http.ServeMux, flow *pairing.Flow, conn *connector.Connec
 		writeJSON(w, p)
 	})
 
-	// Writes run one at a time, so two tabs cannot both pass the same
-	// collision check before either renames.
-	var mu sync.Mutex
-	open := func() (*library.Library, error) { return openLibrary(flow, conn) }
-	routeWrite(mux, "POST /api/library/mkdir", open, &mu, func(lib *library.Library, req mkdirRequest) (opResult, error) {
+	routeTransfer(mux, a)
+
+	open, mu := a.open, &a.mu
+	routeWrite(mux, "POST /api/library/mkdir", open, mu, func(lib *library.Library, req mkdirRequest) (opResult, error) {
 		p, err := lib.CreateFolder(req.Parent, req.Name)
 		return opResult{Path: p}, err
 	})
-	routeWrite(mux, "POST /api/library/rename", open, &mu, func(lib *library.Library, req renameRequest) (opResult, error) {
+	routeWrite(mux, "POST /api/library/rename", open, mu, func(lib *library.Library, req renameRequest) (opResult, error) {
 		warns, err := lib.Rename(req.Path, req.Name, library.Options{ConfirmOpen: req.ConfirmOpen})
 		return opResult{Warnings: warns}, err
 	})
-	routeWrite(mux, "POST /api/library/move", open, &mu, func(lib *library.Library, req moveRequest) (opResult, error) {
+	routeWrite(mux, "POST /api/library/move", open, mu, func(lib *library.Library, req moveRequest) (opResult, error) {
 		if len(req.Paths) == 0 {
 			return opResult{}, errNoPaths
 		}
 		warns, err := lib.Move(req.Paths, req.To, library.Options{ConfirmOpen: req.ConfirmOpen})
 		return opResult{Warnings: warns}, err
 	})
-	routeWrite(mux, "POST /api/library/delete", open, &mu, func(lib *library.Library, req deleteRequest) (opResult, error) {
+	routeWrite(mux, "POST /api/library/delete", open, mu, func(lib *library.Library, req deleteRequest) (opResult, error) {
 		if len(req.Paths) == 0 {
 			return opResult{}, errNoPaths
 		}
@@ -168,15 +170,52 @@ func routeWrite[T interface{ view() string }](mux *http.ServeMux, pattern string
 	})
 }
 
-// openLibrary binds the paired Library root to the linked Device.
-func openLibrary(flow *pairing.Flow, conn *connector.Connector) (*library.Library, error) {
-	p, err := flow.Profile()
+// access opens the Library on the linked Device and holds the lock writes
+// take, so they run one at a time and two tabs cannot both pass the same
+// collision check before either renames.
+type access struct {
+	flow *pairing.Flow
+	conn *connector.Connector
+	mu   sync.Mutex
+
+	linkMu sync.Mutex
+	link   *device.Device // the link the parts were last cleaned on
+}
+
+// open binds the paired Library root to the linked Device. The first time it
+// meets a new link, it starts removing the parts interrupted uploads left
+// on the Device.
+func (a *access) open() (*library.Library, error) {
+	p, err := a.flow.Profile()
 	if err != nil {
 		return nil, err
 	}
-	d, err := conn.Device()
+	d, err := a.conn.Device()
 	if err != nil {
 		return nil, err
 	}
-	return library.New(d, p.LibraryRoot), nil
+	lib := library.New(d, p.LibraryRoot)
+	a.linkMu.Lock()
+	fresh := d != a.link
+	a.link = d
+	a.linkMu.Unlock()
+	if fresh {
+		go a.cleanParts(lib)
+	}
+	return lib, nil
+}
+
+// cleanParts walks the whole Library, so it runs in the background. It holds
+// the write lock: an upload in progress keeps its part until it is done
+// with it, and one starting waits for the clean-up.
+func (a *access) cleanParts(lib *library.Library) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	removed, err := lib.CleanParts()
+	for _, p := range removed {
+		log.Printf("library: removed %s, left by an interrupted upload", p)
+	}
+	if err != nil {
+		log.Printf("library: cleaning up interrupted uploads: %v", err)
+	}
 }
