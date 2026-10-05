@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -92,6 +93,31 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// partsIn lists the Device paths of the upload parts in dir.
+func partsIn(t *testing.T, fake *fakedevice.Device, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(fake.Path(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if library.IsPart(e.Name()) {
+			out = append(out, dir+"/"+e.Name())
+		}
+	}
+	return out
+}
+
+// onePart is the Device path of the only part in dir, or "".
+func onePart(t *testing.T, fake *fakedevice.Device, dir string) string {
+	t.Helper()
+	if p := partsIn(t, fake, dir); len(p) == 1 {
+		return p[0]
+	}
+	return ""
+}
+
 func fileSize(fake *fakedevice.Device, p string) int64 {
 	fi, err := os.Stat(fake.Path(p))
 	if err != nil {
@@ -107,7 +133,7 @@ func TestUploadStreamsToTheDevice(t *testing.T) {
 	fake.WriteFile(t, fakedevice.Documents+"/Sci-Fi/.keep", "")
 	base := liveServer(t, fake)
 	const n = 64 << 20
-	part := fakedevice.Documents + "/Sci-Fi/Saga 02.cbz.part"
+	sci := fakedevice.Documents + "/Sci-Fi"
 
 	var peak atomic.Uint64
 	stop := make(chan struct{})
@@ -134,7 +160,7 @@ func TestUploadStreamsToTheDevice(t *testing.T) {
 
 	src := &gen{n: n, at: n - 4<<20, hook: func() error {
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-			if fileSize(fake, part) >= 16<<20 {
+			if part := onePart(t, fake, sci); part != "" && fileSize(fake, part) >= 16<<20 {
 				return nil
 			}
 		}
@@ -159,7 +185,7 @@ func TestUploadStreamsToTheDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if digest(f) != digest(&gen{n: n}) || fileSize(fake, part) != -1 {
+	if digest(f) != digest(&gen{n: n}) || len(partsIn(t, fake, sci)) != 0 {
 		t.Fatal("the file on the Device is not what was sent")
 	}
 	grew := int64(peak.Load()) - int64(baseline)
@@ -173,25 +199,25 @@ func TestUploadStreamsToTheDevice(t *testing.T) {
 // part it had sent is deleted.
 func TestCancelledUploadLeavesNothing(t *testing.T) {
 	fake := fakedevice.New(t)
-	sentinel := fakedevice.Documents + "/Before.epub.part"
+	doc := fakedevice.Documents
+	sentinel := doc + "/.ember-0123456789abcdef.part"
 	fake.WriteFile(t, sentinel, "x")
 	base := liveServer(t, fake)
 	// Let the clean-up of the new link run first, so it cannot be what
 	// removes the part below.
-	if res, err := http.Get(base + "/api/library/folder?path="); err == nil {
-		res.Body.Close()
-	}
 	waitFor(t, "the clean-up", func() bool { return fileSize(fake, sentinel) == -1 })
-	part := fakedevice.Documents + "/Gone.epub.part"
 	src := &gen{n: 8 << 20, at: 2 << 20, hook: func() error {
-		waitFor(t, "the part to appear", func() bool { return fileSize(fake, part) > 0 })
+		waitFor(t, "the part to appear", func() bool {
+			part := onePart(t, fake, doc)
+			return part != "" && fileSize(fake, part) > 0
+		})
 		return errors.New("tab closed")
 	}}
 	if res, err := http.DefaultClient.Do(uploadRequest(base, "folder=&name=Gone.epub", src, 8<<20)); err == nil {
 		res.Body.Close()
 		t.Fatalf("the upload went through: %d", res.StatusCode)
 	}
-	waitFor(t, "the part to go", func() bool { return fileSize(fake, part) == -1 })
+	waitFor(t, "the part to go", func() bool { return len(partsIn(t, fake, doc)) == 0 })
 	if fileSize(fake, fakedevice.Documents+"/Gone.epub") != -1 {
 		t.Fatal("a cut upload was renamed into place")
 	}
@@ -244,7 +270,7 @@ func TestUploadRefusals(t *testing.T) {
 	}{
 		{"folder=&name=a:b.epub", http.StatusBadRequest, "invalid_name"},
 		{"folder=&name=..%2Fx.epub", http.StatusBadRequest, "invalid_name"},
-		{"folder=&name=x.epub.part", http.StatusBadRequest, "invalid_name"},
+		{"folder=&name=.ember-0123456789abcdef.part", http.StatusBadRequest, "invalid_name"},
 		{"folder=..%2Fkoreader&name=x.epub", http.StatusBadRequest, "outside_library"},
 		{"folder=%2Fmnt%2Fus&name=x.epub", http.StatusBadRequest, "outside_library"},
 		{"folder=..%5Ckoreader&name=x.epub", http.StatusBadRequest, "outside_library"},
@@ -362,22 +388,21 @@ func TestDownloadOverTheAPI(t *testing.T) {
 	}
 }
 
-// Parts left by uploads a dropped link cut short are removed on the next
-// link, wherever they are in the Library; nothing else is.
+// Parts left by uploads a dropped link cut short are removed as soon as the
+// next link is made, wherever they are in the Library; nothing else is.
 func TestLeftoverPartsAreCleanedOnLink(t *testing.T) {
 	fake := fakedevice.New(t)
 	doc := fakedevice.Documents
-	for _, p := range []string{doc + "/Lost.epub.part", doc + "/Sci-Fi/Deep/Old.pdf.part", doc + "/Dune.sdr/x.part", doc + "/Notes.PART", "/mnt/us/stray.part"} {
+	const a, b = "/.ember-0123456789abcdef.part", "/.ember-fedcba9876543210.part"
+	gone := []string{doc + a, doc + "/Sci-Fi/Deep" + b}
+	kept := []string{doc + "/Lost.epub.part", doc + "/Dune.sdr" + a, "/mnt/us" + a}
+	for _, p := range append(slices.Clone(gone), kept...) {
 		fake.WriteFile(t, p, "x")
 	}
 	h := linkedServer(t, fake)
-	if rec := get(t, h, "/api/library/folder?path="); rec.Code != http.StatusOK {
-		t.Fatalf("%d %s", rec.Code, rec.Body)
-	}
-	waitFor(t, "the clean-up", func() bool {
-		return !onDisk(t, fake, doc+"/Lost.epub.part") && !onDisk(t, fake, doc+"/Sci-Fi/Deep/Old.pdf.part")
-	})
-	for _, p := range []string{doc + "/Dune.sdr/x.part", doc + "/Notes.PART", "/mnt/us/stray.part"} {
+	// No request is made: the link itself starts the clean-up.
+	waitFor(t, "the clean-up", func() bool { return !onDisk(t, fake, gone[0]) && !onDisk(t, fake, gone[1]) })
+	for _, p := range kept {
 		if !onDisk(t, fake, p) {
 			t.Errorf("%s was removed", p)
 		}
@@ -385,17 +410,79 @@ func TestLeftoverPartsAreCleanedOnLink(t *testing.T) {
 
 	// Within the same link, a part is not ember's to clean up: it could be
 	// an upload in progress.
-	fake.WriteFile(t, doc+"/Again.epub.part", "x")
+	fake.WriteFile(t, doc+a, "x")
 	get(t, h, "/api/library/folder?path=")
-	if rec := upload(h, "folder=&name=Sync.epub", "x"); rec.Code != http.StatusOK || !onDisk(t, fake, doc+"/Again.epub.part") {
+	if rec := upload(h, "folder=&name=Sync.epub", "x"); rec.Code != http.StatusOK || !onDisk(t, fake, doc+a) {
 		t.Fatalf("cleaned within one link: %d %s", rec.Code, rec.Body)
 	}
 
 	fake.Stop()
 	fake.Start()
-	waitFor(t, "the next link", func() bool {
-		return get(t, h, "/api/library/folder?path=").Code == http.StatusOK && !onDisk(t, fake, doc+"/Again.epub.part")
+	waitFor(t, "the next link", func() bool { return !onDisk(t, fake, doc+a) })
+}
+
+// blockedBody is an upload body that sends a little and then waits.
+type blockedBody struct {
+	sent    bool
+	release chan struct{}
+}
+
+func (b *blockedBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, "start"), nil
+	}
+	<-b.release
+	return 0, errors.New("tab closed")
+}
+
+// While an upload streams in, other writes still run: the write lock is
+// only held for the upload's checks and its final rename.
+func TestWritesGoOnWhileAnUploadStreams(t *testing.T) {
+	fake, h := opLibrary(t)
+	doc := fakedevice.Documents
+	body := &blockedBody{release: make(chan struct{})}
+	uploaded := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest("POST", "/api/library/upload?folder=&name=Slow.epub", body)
+		req.Host = self
+		req.Header.Set("Origin", "http://"+self)
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.ContentLength = 1 << 20
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		uploaded <- rec.Code
+	}()
+	waitFor(t, "the upload to stream", func() bool { return onePart(t, fake, doc) != "" })
+
+	within := func(what string, f func() *httptest.ResponseRecorder) {
+		t.Helper()
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- f() }()
+		select {
+		case rec := <-done:
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", what, rec.Code, rec.Body)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s waited for the upload", what)
+		}
+	}
+	within("rename", func() *httptest.ResponseRecorder {
+		return post(t, h, "/api/library/rename", `{"path":"Dune.epub","name":"Dune Messiah.epub"}`)
 	})
+	within("settings", func() *httptest.ResponseRecorder {
+		return post(t, h, "/api/settings", `{"keepAwake":false}`)
+	})
+	within("forget", func() *httptest.ResponseRecorder {
+		return post(t, h, "/api/settings/forget", `{"confirm":true}`)
+	})
+	close(body.release)
+	// The link is gone with the forgotten Kindle, so the part stays for
+	// the clean-up of a later link.
+	if code := <-uploaded; code == http.StatusOK {
+		t.Fatal("the cut upload went through")
+	}
 }
 
 // Two uploads racing for one name: one lands whole, the other is refused.
@@ -414,7 +501,7 @@ func TestUploadsDoNotRace(t *testing.T) {
 		if got := fake.ReadFile(t, fakedevice.Documents+"/"+name); got != bodies[0] && got != bodies[1] {
 			t.Fatalf("round %d: the file mixes both uploads", i)
 		}
-		if onDisk(t, fake, fakedevice.Documents+"/"+name+".part") {
+		if len(partsIn(t, fake, fakedevice.Documents)) != 0 {
 			t.Fatalf("round %d: a part was left", i)
 		}
 	}

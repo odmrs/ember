@@ -34,6 +34,7 @@ func linkedHandler(t *testing.T, fake *fakedevice.Device, hostport string) http.
 	noLAN := func([]int) ([]string, error) { return nil, nil }
 	conn := connector.New(connector.Config{Store: store, Targets: noLAN})
 	t.Cleanup(conn.Close)
+	h := New(hostport, "test", pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), conn)
 	_, end := conn.Session()
 	t.Cleanup(end)
 	deadline := time.Now().Add(10 * time.Second)
@@ -46,7 +47,7 @@ func linkedHandler(t *testing.T, fake *fakedevice.Device, hostport string) http.
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return New(hostport, "test", pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), conn)
+	return h
 }
 
 func pairedStore(t *testing.T, fake *fakedevice.Device) *profile.Store {

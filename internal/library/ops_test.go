@@ -73,39 +73,38 @@ func (s *spy) Rename(from, to string) error {
 }
 
 func TestValidName(t *testing.T) {
-	ok := []string{"Dune.epub", "Sci-Fi", "Ação & Aventura", "a", "名前", strings.Repeat("x", 240), "Dune. Messiah", "#1 [draft]"}
+	ok := []string{"Dune.epub", "Sci-Fi", "Ação & Aventura", "a", "名前", strings.Repeat("x", 240), "Dune. Messiah", "#1 [draft]", "Dune.epub.part", "x.PART"}
 	for _, name := range ok {
 		if err := ValidName(name); err != nil {
 			t.Errorf("ValidName(%q) = %v", name, err)
 		}
 	}
 	bad := map[string]string{
-		"":                       ReasonEmpty,
-		".":                      ReasonDots,
-		"..":                     ReasonDots,
-		"a/b":                    ReasonReserved,
-		`a\b`:                    ReasonReserved,
-		"a:b":                    ReasonReserved,
-		"a*":                     ReasonReserved,
-		"a?":                     ReasonReserved,
-		`a"b`:                    ReasonReserved,
-		"a<b":                    ReasonReserved,
-		"a>b":                    ReasonReserved,
-		"a|b":                    ReasonReserved,
-		"a\x00b":                 ReasonControl,
-		"a\nb":                   ReasonControl,
-		"a\tb":                   ReasonControl,
-		"a\x7f":                  ReasonControl,
-		"name.":                  ReasonTrailing,
-		"name ":                  ReasonTrailing,
-		strings.Repeat("x", 241): ReasonTooLong,
-		strings.Repeat("é", 121): ReasonTooLong, // 242 bytes
-		".hidden":                ReasonHidden,
-		"Dune.sdr":               ReasonSidecar,
-		"Dune.SDR":               ReasonSidecar,
-		"Dune.epub.part":         ReasonPart,
-		"x.PART":                 ReasonPart,
-		"bad\xffutf8":            ReasonEncoding,
+		"":                             ReasonEmpty,
+		".":                            ReasonDots,
+		"..":                           ReasonDots,
+		"a/b":                          ReasonReserved,
+		`a\b`:                          ReasonReserved,
+		"a:b":                          ReasonReserved,
+		"a*":                           ReasonReserved,
+		"a?":                           ReasonReserved,
+		`a"b`:                          ReasonReserved,
+		"a<b":                          ReasonReserved,
+		"a>b":                          ReasonReserved,
+		"a|b":                          ReasonReserved,
+		"a\x00b":                       ReasonControl,
+		"a\nb":                         ReasonControl,
+		"a\tb":                         ReasonControl,
+		"a\x7f":                        ReasonControl,
+		"name.":                        ReasonTrailing,
+		"name ":                        ReasonTrailing,
+		strings.Repeat("x", 241):       ReasonTooLong,
+		strings.Repeat("é", 121):       ReasonTooLong, // 242 bytes
+		".hidden":                      ReasonHidden,
+		"Dune.sdr":                     ReasonSidecar,
+		"Dune.SDR":                     ReasonSidecar,
+		".ember-0123456789abcdef.part": ReasonHidden,
+		"bad\xffutf8":                  ReasonEncoding,
 	}
 	for name, reason := range bad {
 		err := ValidName(name)

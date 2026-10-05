@@ -94,6 +94,7 @@ type Connector struct {
 	// awakeFailed is set once the keep-awake command has failed on its own;
 	// it is not tried again until keep-awake is switched off.
 	awakeFailed bool
+	onLink      []func(*device.Device)
 
 	reload chan struct{}
 }
@@ -211,6 +212,14 @@ func (c *Connector) Reload() {
 	case c.reload <- struct{}{}:
 	default:
 	}
+}
+
+// OnLink registers f to be called with every new link, right after it is
+// published. f runs on the Connector's loop, so it must not block.
+func (c *Connector) OnLink(f func(*device.Device)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onLink = append(c.onLink, f)
 }
 
 // publish sets the state and the linked Device together and tells every
@@ -445,6 +454,12 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 	made := loginOf(p)
 	k := &keeper{c: c, d: d}
 	c.publish(State{Phase: PhaseLinked, Address: addr, KeepAwake: k.set(p.KeepAwake)}, d)
+	c.mu.Lock()
+	hooks := c.onLink
+	c.mu.Unlock()
+	for _, f := range hooks {
+		f(d)
+	}
 	defer d.Close()
 	defer c.publish(State{Phase: PhaseSearching, Address: addr}, nil)
 	defer k.stop()

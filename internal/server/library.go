@@ -171,19 +171,26 @@ func routeWrite[T interface{ view() string }](mux *http.ServeMux, pattern string
 
 // access opens the Library on the linked Device and holds the lock writes
 // take, so they run one at a time and two tabs cannot both pass the same
-// collision check before either renames.
+// collision check before either renames. An upload holds it only for its
+// checks and its final rename, never while its data streams in.
 type access struct {
 	flow *pairing.Flow
 	conn *connector.Connector
 	mu   sync.Mutex
 
-	linkMu sync.Mutex
-	link   *device.Device // the link the parts were last cleaned on
+	// uploads maps the part of every upload in progress to the bytes it
+	// will take, so the clean-up leaves it alone and the free-space check
+	// of the next one counts it. Guarded by mu.
+	uploads map[string]uint64
 }
 
-// open binds the paired Library root to the linked Device. The first time it
-// meets a new link, it starts removing the parts interrupted uploads left
-// on the Device.
+func newAccess(flow *pairing.Flow, conn *connector.Connector) *access {
+	a := &access{flow: flow, conn: conn, uploads: map[string]uint64{}}
+	conn.OnLink(a.linked)
+	return a
+}
+
+// open binds the paired Library root to the linked Device.
 func (a *access) open() (*library.Library, error) {
 	p, err := a.flow.Profile()
 	if err != nil {
@@ -193,28 +200,41 @@ func (a *access) open() (*library.Library, error) {
 	if err != nil {
 		return nil, err
 	}
-	lib := library.New(d, p.LibraryRoot)
-	a.linkMu.Lock()
-	fresh := d != a.link
-	a.link = d
-	a.linkMu.Unlock()
-	if fresh {
-		go a.cleanParts(lib)
-	}
-	return lib, nil
+	return library.New(d, p.LibraryRoot), nil
 }
 
-// cleanParts walks the whole Library, so it runs in the background. It holds
-// the write lock: an upload in progress keeps its part until it is done
-// with it, and one starting waits for the clean-up.
+// linked runs when the Connector makes a new link: the parts interrupted
+// uploads left on the Device are removed in the background.
+func (a *access) linked(d *device.Device) {
+	p, err := a.flow.Profile()
+	if err != nil {
+		return
+	}
+	go a.cleanParts(library.New(d, p.LibraryRoot))
+}
+
+// cleanParts walks the whole Library, so it runs in the background, under
+// the write lock. The parts of uploads in progress are kept.
 func (a *access) cleanParts(lib *library.Library) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	removed, err := lib.CleanParts()
+	removed, err := lib.CleanParts(func(part string) bool {
+		_, ok := a.uploads[part]
+		return ok
+	})
 	for _, p := range removed {
 		log.Printf("library: removed %s, left by an interrupted upload", p)
 	}
 	if err != nil {
 		log.Printf("library: cleaning up interrupted uploads: %v", err)
 	}
+}
+
+// reserved is the space uploads in progress still need; a.mu must be held.
+func (a *access) reserved() uint64 {
+	var n uint64
+	for _, b := range a.uploads {
+		n += b
+	}
+	return n
 }

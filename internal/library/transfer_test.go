@@ -79,10 +79,10 @@ func TestUploadWritesAPartThenRenames(t *testing.T) {
 		library(t, d)
 		lib := New(fsys, root)
 		const n = 3<<20 + 17
-		final, part := root+"/Sci-Fi/Dune Messiah.epub", root+"/Sci-Fi/Dune Messiah.epub.part"
+		final := root + "/Sci-Fi/Dune Messiah.epub"
 		src := &source{n: n, at: n / 2, hook: func() error {
-			if !exists(t, d, part) || exists(t, d, final) {
-				return errors.New("halfway: want only the .part on the Device")
+			if len(parts(t, d, root+"/Sci-Fi")) != 1 || exists(t, d, final) {
+				return errors.New("halfway: want only the part on the Device")
 			}
 			return nil
 		}}
@@ -91,7 +91,7 @@ func TestUploadWritesAPartThenRenames(t *testing.T) {
 		if p != "Sci-Fi/Dune Messiah.epub" || len(warns) != 0 {
 			t.Fatalf("path %q, warnings %v", p, warns)
 		}
-		if exists(t, d, part) || !bytes.Equal([]byte(content(t, d, final)), want(n)) {
+		if len(parts(t, d, root+"/Sci-Fi")) != 0 || !bytes.Equal([]byte(content(t, d, final)), want(n)) {
 			t.Fatal("the uploaded file is not what was sent")
 		}
 	})
@@ -103,10 +103,13 @@ func TestUploadStreams(t *testing.T) {
 	backends(t, func(t *testing.T, fsys FS, d disk) {
 		library(t, d)
 		const n = 16 << 20
-		part := d.Path(root + "/Big.pdf.part")
 		src := &source{n: n, at: n - 1<<20, hook: func() error {
 			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if fi, err := os.Stat(part); err == nil && fi.Size() >= 4<<20 {
+				p := parts(t, d, root)
+				if len(p) != 1 {
+					continue
+				}
+				if fi, err := os.Stat(d.Path(root + "/" + p[0])); err == nil && fi.Size() >= 4<<20 {
 					return nil
 				}
 			}
@@ -128,7 +131,7 @@ func TestUploadRefusesWhatDoesNotFit(t *testing.T) {
 		if !errors.As(err, &nse) || nse.Need <= 64<<20 || nse.Free != 64<<20 {
 			t.Fatalf("err = %#v", err)
 		}
-		if exists(t, d, root+"/Huge.cbz.part") || exists(t, d, root+"/Huge.cbz") {
+		if len(parts(t, d, root)) != 0 || exists(t, d, root+"/Huge.cbz") {
 			t.Fatal("something was written")
 		}
 		_, err = upload(lib, "", "Fits.cbz", 64<<20-UploadMargin, UploadOptions{})
@@ -172,10 +175,78 @@ func TestReplaceKeepsTheSidecar(t *testing.T) {
 		if content(t, d, root+"/Dune.sdr/metadata.epub.lua") != "return { percent_finished = 0.42 }" {
 			t.Fatal("the progress was lost")
 		}
-		if names := deviceNames(t, d, root); slices.ContainsFunc(names, func(n string) bool { return strings.Contains(n, ".~") || strings.HasSuffix(n, ".part") }) {
+		if names := deviceNames(t, d, root); slices.ContainsFunc(names, func(n string) bool { return strings.Contains(n, ".~") || IsPart(n) }) {
 			t.Fatalf("left behind: %v", names)
 		}
 	})
+}
+
+// parts lists the upload parts in dir.
+func parts(t *testing.T, d disk, dir string) []string {
+	t.Helper()
+	return slices.DeleteFunc(deviceNames(t, d, dir), func(n string) bool { return !IsPart(n) })
+}
+
+// A file of the user's whose name looks like an upload in progress is
+// neither written over by an upload nor taken by the clean-up.
+func TestUploadLeavesTheUsersPartFilesAlone(t *testing.T) {
+	backends(t, func(t *testing.T, fsys FS, d disk) {
+		library(t, d)
+		mine := root + "/Sci-Fi/Dune Messiah.epub.part"
+		d.WriteFile(t, mine, "mine")
+		lib := New(fsys, root)
+		_, err := upload(lib, "Sci-Fi", "Dune Messiah.epub", 1<<20, UploadOptions{})
+		must(t, "upload", err)
+		if content(t, d, mine) != "mine" {
+			t.Fatal("the upload wrote over the user's file")
+		}
+		_, err = lib.CleanParts(nil)
+		must(t, "clean", err)
+		if content(t, d, mine) != "mine" {
+			t.Fatal("the clean-up took the user's file")
+		}
+	})
+}
+
+// squatFS puts a file where the next part is about to be created.
+type squatFS struct {
+	FS
+	d disk
+	t *testing.T
+}
+
+func (s squatFS) Create(p string) (io.WriteCloser, error) {
+	s.d.WriteFile(s.t, p, "squatter")
+	return s.FS.Create(p)
+}
+
+// The part is created exclusively: should its name be taken after all, the
+// upload fails and the file holding it stays as it was.
+func TestUploadNeverTruncatesWhatHoldsThePartName(t *testing.T) {
+	backends(t, func(t *testing.T, fsys FS, d disk) {
+		library(t, d)
+		lib := New(squatFS{fsys, d, t}, root)
+		_, err := upload(lib, "", "New.epub", 1000, UploadOptions{})
+		if err == nil {
+			t.Fatal("the upload went through a taken part name")
+		}
+		p := parts(t, d, root)
+		if len(p) != 1 || content(t, d, root+"/"+p[0]) != "squatter" || exists(t, d, root+"/New.epub") {
+			t.Fatalf("parts %v: the squatter was touched or the upload placed", p)
+		}
+	})
+}
+
+func TestPartNamesAreHiddenAndNeverValid(t *testing.T) {
+	for range 100 {
+		n := partName()
+		if !IsPart(n) || ValidName(n) == nil {
+			t.Fatalf("%q: IsPart %v, ValidName %v", n, IsPart(n), ValidName(n))
+		}
+		if len(n) > maxNameBytes {
+			t.Fatalf("%q is longer than a name may be", n)
+		}
+	}
 }
 
 func deviceNames(t *testing.T, d disk, dir string) []string {
@@ -214,8 +285,8 @@ func TestUploadChecksTheNameAgainBeforeTheRename(t *testing.T) {
 		}}
 		_, _, err := lib.Upload("Sci-Fi", "New.epub", 1<<20, src, UploadOptions{})
 		mustNot(t, "taken meanwhile", err, ErrExists)
-		if content(t, d, root+"/Sci-Fi/NEW.epub") != "theirs" || exists(t, d, root+"/Sci-Fi/New.epub.part") {
-			t.Fatal("overwrote it, or left the .part")
+		if content(t, d, root+"/Sci-Fi/NEW.epub") != "theirs" || len(parts(t, d, root+"/Sci-Fi")) != 0 {
+			t.Fatal("overwrote it, or left the part")
 		}
 	})
 }
@@ -237,7 +308,7 @@ func TestCutUploadRemovesThePart(t *testing.T) {
 		for what, c := range cases {
 			_, _, err := lib.Upload("", "Cut.epub", c.size, c.src, UploadOptions{})
 			mustNot(t, what, err, ErrIncomplete)
-			if exists(t, d, root+"/Cut.epub.part") || exists(t, d, root+"/Cut.epub") {
+			if len(parts(t, d, root)) != 0 || exists(t, d, root+"/Cut.epub") {
 				t.Fatalf("%s: left a file", what)
 			}
 		}
@@ -248,7 +319,7 @@ func TestUploadRefusesBadNamesAndPlaces(t *testing.T) {
 	backends(t, func(t *testing.T, fsys FS, d disk) {
 		library(t, d)
 		lib := New(fsys, root)
-		for _, name := range []string{"a:b.epub", ".hidden.epub", "x.sdr", "x.epub.part", "../x.epub", "a/b.epub", `..\x.epub`, "", "x.epub "} {
+		for _, name := range []string{"a:b.epub", ".hidden.epub", "x.sdr", ".ember-0123456789abcdef.part", "../x.epub", "a/b.epub", `..\x.epub`, "", "x.epub "} {
 			_, _, err := lib.Upload("", name, 1, untouched{t}, UploadOptions{})
 			mustNot(t, fmt.Sprintf("name %q", name), err, ErrInvalidName)
 		}
@@ -309,27 +380,31 @@ func TestCheckUpload(t *testing.T) {
 func TestCleanPartsRemovesOnlyUploadLeftovers(t *testing.T) {
 	backends(t, func(t *testing.T, fsys FS, d disk) {
 		library(t, d)
-		leftovers := []string{root + "/Lost.epub.part", root + "/Sci-Fi/Asimov/I, Robot.pdf.part"}
+		const a, b = ".ember-0123456789abcdef.part", ".ember-fedcba9876543210.part"
+		leftovers := []string{root + "/" + a, root + "/Sci-Fi/Asimov/" + b}
 		keep := []string{
-			root + "/Dune.sdr/cache.part",        // inside a Sidecar
-			root + "/.hidden.part",               // hidden: never ember's
-			root + "/.part",                      // no name before it
-			root + "/bad:name.part",              // a name ember would refuse
-			root + "/Sci-Fi/Notes.PART",          // ember writes .part in lower case
-			"/mnt/us/koreader/settings.lua.part", // outside, behind the escape link
-			"/mnt/us/stray.part",                 // outside
+			root + "/Sci-Fi/" + b,                   // an upload still running
+			root + "/Lost.epub.part",                // the user's
+			root + "/.ember-ABCDEF0123456789.part",  // ember writes lower-case hex
+			root + "/.ember-0123.part",              // too short
+			root + "/.ember-0123456789abcdeg.part",  // not hex
+			root + "/x.ember-0123456789abcdef.part", // not hidden
+			root + "/Dune.sdr/" + a,                 // inside a Sidecar
+			root + "/.hidden/" + a,                  // inside a hidden folder
+			"/mnt/us/koreader/" + a,                 // outside, behind the escape link
+			"/mnt/us/" + a,                          // outside
 			root + "/Dune.epub",
 		}
 		for _, p := range append(slices.Clone(leftovers), keep...) {
 			d.WriteFile(t, p, "x")
 		}
-		mkdir(t, d, root+"/Folder.part/inside")
-		keep = append(keep, root+"/Folder.part/inside")
+		mkdir(t, d, root+"/"+b+"/inside")
+		keep = append(keep, root+"/"+b+"/inside")
 
-		removed, err := New(fsys, root).CleanParts()
+		removed, err := New(fsys, root).CleanParts(func(p string) bool { return p == root+"/Sci-Fi/"+b })
 		must(t, "clean", err)
 		slices.Sort(removed)
-		if got := strings.Join(removed, "|"); got != "Lost.epub.part|Sci-Fi/Asimov/I, Robot.pdf.part" {
+		if got := strings.Join(removed, "|"); got != a+"|Sci-Fi/Asimov/"+b {
 			t.Fatalf("removed %s", got)
 		}
 		for _, p := range leftovers {

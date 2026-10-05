@@ -22,7 +22,6 @@ const (
 	ReasonTooLong  = "too_long"
 	ReasonHidden   = "hidden"  // starts with a dot, so nothing would list it
 	ReasonSidecar  = "sidecar" // ends in .sdr, which KOReader owns
-	ReasonPart     = "part"    // ends in .part, which marks an unfinished upload
 )
 
 // ErrInvalidName matches every *NameError.
@@ -42,8 +41,8 @@ func (e *NameError) Is(target error) bool { return target == ErrInvalidName }
 
 // ValidName checks a new name for a Folder or a Book. The Library sits on
 // FAT, so it refuses what FAT cannot hold, and names the Library listing
-// would hide. Names ending in .part are kept for uploads in progress, so
-// ember never gives a file a name the clean-up of interrupted uploads takes.
+// would hide. Refusing hidden names also keeps every name clear of the
+// parts uploads write to, which start with a dot.
 func ValidName(name string) error {
 	var reason string
 	switch {
@@ -65,8 +64,6 @@ func ValidName(name string) error {
 		reason = ReasonHidden
 	case strings.HasSuffix(strings.ToLower(name), ".sdr"):
 		reason = ReasonSidecar
-	case strings.HasSuffix(strings.ToLower(name), partSuffix):
-		reason = ReasonPart
 	default:
 		return nil
 	}

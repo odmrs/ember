@@ -36,7 +36,7 @@ func newHandler(hostport, version string, flow *pairing.Flow, conn *connector.Co
 	})
 	mux.HandleFunc("GET /api/events", events(conn))
 	routePairing(mux, flow)
-	a := &access{flow: flow, conn: conn}
+	a := newAccess(flow, conn)
 	routeLibrary(mux, a)
 	routeSettings(mux, a, &confirmGate{now: now})
 	return guard(hostport, mux)

@@ -100,7 +100,7 @@ func TestEveryServerCodeHasAMessage(t *testing.T) {
 	en := catalog(t, "en")
 	reasons := []string{
 		library.ReasonEmpty, library.ReasonDots, library.ReasonEncoding, library.ReasonReserved, library.ReasonControl,
-		library.ReasonTrailing, library.ReasonTooLong, library.ReasonHidden, library.ReasonSidecar, library.ReasonPart,
+		library.ReasonTrailing, library.ReasonTooLong, library.ReasonHidden, library.ReasonSidecar,
 	}
 	for _, r := range reasons {
 		if _, ok := en["err.name."+r]; !ok {
