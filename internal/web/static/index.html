@@ -127,10 +127,11 @@
       <div class="head">
         <span class="label"><span data-i18n="files"></span><span id="files-where"></span></span>
         <div class="toolbar">
-          <button type="button" disabled data-i18n="upload"></button>
+          <button type="button" id="tb-upload" data-action="upload" disabled data-i18n="upload"></button>
           <button type="button" id="tb-folder" data-action="new-folder" disabled data-i18n="newFolder"></button>
-          <button type="button" disabled data-i18n="download"></button>
+          <button type="button" id="tb-get" data-action="download" disabled data-i18n="download"></button>
           <button type="button" id="tb-delete" data-action="delete" disabled data-i18n="delete"></button>
+          <input type="file" id="upload-input" multiple hidden>
         </div>
       </div>
       <table class="list">
@@ -138,8 +139,17 @@
         <tbody id="rows"></tbody>
       </table>
       <p class="empty dim" id="empty" data-i18n="emptyFolder" hidden></p>
+      <div class="drop-hint" id="drop-hint"></div>
     </section>
   </main>
+
+  <section class="box queue" id="queue" hidden>
+    <div class="head">
+      <span class="label"><span data-i18n="queue.title"></span> <span id="queue-count"></span></span>
+      <div class="toolbar"><button type="button" data-action="clear-queue" id="queue-clear" data-i18n="queue.clear"></button></div>
+    </div>
+    <ul class="queue-rows" id="queue-rows"></ul>
+  </section>
 
   <dialog class="box dialog" id="dialog">
     <form method="dialog">

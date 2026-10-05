@@ -81,6 +81,9 @@ const ERRORS = {
   extension_change: "err.extensionChange",
   partial_failure: "err.partial",
   bad_request: "err.badRequest",
+  no_space: "err.noSpace",
+  incomplete: "err.incomplete",
+  not_file: "err.notFile",
 };
 
 // errorText is an API error as the user reads it; a refused name says why.
@@ -145,6 +148,7 @@ function render() {
     renderHero(d);
   }
   if (!active && !connecting) renderLibrary();
+  if (uploads.items.length) renderQueue();
 }
 
 function renderConnecting() {
@@ -383,7 +387,8 @@ function renderLibrary() {
   $("rows").replaceChildren(...rows);
   $("empty").hidden = !lib.folder || lib.folder.entries.length > 0 || lib.edit?.kind === "new";
   $("tb-folder").disabled = !lib.folder || lib.busy;
-  $("tb-delete").disabled = lib.sel.size === 0 || lib.busy;
+  $("tb-upload").disabled = !lib.folder;
+  markToolbar();
 
   const input = $("name-edit");
   if (input && !input.dataset.focused) {
@@ -418,7 +423,19 @@ function select(p, e) {
 // drag that is starting, and the second click of a double-click.
 function markSelection() {
   for (const tr of $("rows").querySelectorAll("tr[data-select]")) tr.classList.toggle("sel", lib.sel.has(tr.dataset.select));
+  markToolbar();
+}
+
+function markToolbar() {
   $("tb-delete").disabled = lib.sel.size === 0 || lib.busy;
+  $("tb-get").disabled = !selectedFile();
+}
+
+// selectedFile is the one selected entry when it is a file, which GET takes.
+function selectedFile() {
+  if (lib.sel.size !== 1) return null;
+  const e = entryAt([...lib.sel][0]);
+  return e && e.kind !== "folder" ? e : null;
 }
 
 const entryAt = (p) => lib.folder?.entries.find((e) => e.path === p);
@@ -539,8 +556,7 @@ async function move(paths, to) {
   const open = paths.some((p) => entryAt(p)?.openNow || (entryAt(p)?.kind === "folder" && lib.stats?.openNow?.startsWith(p + "/")));
   const res = await withOpenConfirm(open, (confirmOpen) => change("move", { paths, to, confirmOpen }));
   if (!res) return;
-  const where = to ? baseName(to) : `/ ${baseName(status.device?.libraryRoot ?? "")}`;
-  log(fill(t("log.moved"), { what: counted(paths.length, baseName(paths[0])), to: where }) + warnings(res));
+  log(fill(t("log.moved"), { what: counted(paths.length, baseName(paths[0])), to: where(to) }) + warnings(res));
 }
 
 // remove asks first, showing what goes: Book and folder counts, the
@@ -575,13 +591,15 @@ async function remove(paths) {
 }
 
 // ask shows the confirm dialog and resolves to true when the user confirms.
-function ask({ title, body, warn, ok }) {
+function ask({ title, body, warn, ok, cancel = t("cancel"), okClass = "danger" }) {
   const d = $("dialog");
   $("dialog-title").textContent = title;
   const content = body.map((b) => typeof b === "string" ? el("p", {}, b) : b);
   if (warn) content.push(el("p", { class: "warn" }, warn));
   $("dialog-body").replaceChildren(...content);
   $("dialog-ok").textContent = ok;
+  $("dialog-ok").className = okClass;
+  d.querySelector("[value=cancel]").textContent = cancel;
   d.returnValue = "";
   d.showModal();
   d.querySelector("[value=cancel]").focus();
@@ -687,6 +705,10 @@ document.addEventListener("click", (e) => {
     case "delete": return remove([...lib.sel]);
     case "delete-one": return remove([b.dataset.path]);
     case "rename": return startRename(b.dataset.path);
+    case "upload": return $("upload-input").click();
+    case "download": return download(selectedFile());
+    case "cancel-upload": return cancelUpload(Number(b.dataset.id));
+    case "clear-queue": return clearQueue();
     case "search": return search("");
     case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint);
     case "finish":
@@ -754,6 +776,203 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// where names a folder for the log and the dialogs.
+function where(p) {
+  return p ? baseName(p) : `/ ${baseName(status.device?.libraryRoot ?? "")}`;
+}
+
+// download hands the file to the browser's own download manager, which
+// streams it to disk. The HEAD first turns a refusal into a log line instead
+// of a saved error page.
+async function download(e) {
+  if (!e) return;
+  const url = `api/library/download?path=${encodeURIComponent(e.path)}`;
+  const res = await fetch(url, { method: "HEAD" }).catch(() => null);
+  if (!res?.ok) return log(`${t(res ? "err.notFound" : "err.unreachable")} ${e.name}`);
+  const a = el("a", { href: url, download: e.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  log(fill(t("log.download"), { name: e.name }));
+}
+
+// Uploads run one at a time, in the order the files were picked. Each is
+// checked just before it is sent, so a name taken or space used up by the
+// previous one is seen, and a taken name is asked about when its turn comes.
+const uploads = { items: [], running: false, seq: 0 };
+const FINISHED = new Set(["done", "skipped", "failed", "cancelled"]);
+
+function enqueue(files) {
+  if (!lib.folder || !files?.length) return;
+  for (const file of files) {
+    uploads.items.push({ id: ++uploads.seq, file, name: file.name, size: file.size, folder: lib.path, state: "queued", sent: 0 });
+  }
+  renderQueue();
+  runQueue();
+}
+
+async function runQueue() {
+  if (uploads.running) return;
+  uploads.running = true;
+  try {
+    for (let it; (it = uploads.items.find((x) => x.state === "queued"));) await uploadOne(it);
+  } finally {
+    uploads.running = false;
+  }
+}
+
+async function uploadOne(it) {
+  setItem(it, "checking");
+  let a;
+  try {
+    a = await api(`api/library/upload/check?${new URLSearchParams({ folder: it.folder, name: it.name, size: it.size })}`);
+  } catch (err) {
+    return failItem(it, errorText(err));
+  }
+  if (it.state !== "checking") return;
+  it.book = a.book;
+  if (a.reason) return failItem(it, t(`err.name.${a.reason}`));
+  if (!a.fits) return failItem(it, fill(t("up.noSpace"), { size: bytes(it.size), free: bytes(a.freeBytes) }));
+  let replace = false;
+  if (a.existing) {
+    if (!a.replaceable) return failItem(it, fill(t("up.folderThere"), { name: a.existing }));
+    replace = await ask({
+      title: fill(t("dlg.replaceTitle"), { name: a.existing }),
+      body: [fill(t("dlg.replaceBody"), { name: a.existing, folder: where(it.folder) }), t("dlg.replaceKeeps")],
+      warn: a.openNow ? t("dlg.replaceOpen") : "",
+      ok: t("dlg.replace"),
+      cancel: t("dlg.skip"),
+      okClass: "primary",
+    });
+    if (it.state !== "checking") return;
+    if (!replace) {
+      setItem(it, "skipped");
+      return log(fill(t("log.skipped"), { name: it.name, to: where(it.folder) }));
+    }
+  }
+  it.replace = replace;
+  await send(it, { replace, confirmOpen: replace && a.openNow });
+}
+
+function send(it, { replace, confirmOpen }) {
+  return new Promise((resolve) => {
+    const q = new URLSearchParams({ folder: it.folder, name: it.name, view: lib.path });
+    if (replace) q.set("replace", "1");
+    if (confirmOpen) q.set("confirmOpen", "1");
+    const xhr = new XMLHttpRequest();
+    it.xhr = xhr;
+    it.started = performance.now();
+    setItem(it, "sending");
+    xhr.open("POST", `api/library/upload?${q}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      it.sent = e.loaded;
+      const secs = (performance.now() - it.started) / 1000;
+      if (secs > 0.25) it.speed = e.loaded / secs;
+      setItem(it, e.loaded >= it.size ? "finishing" : "sending");
+    };
+    xhr.onload = () => {
+      let res = {};
+      try { res = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        it.sent = it.size;
+        setItem(it, "done");
+        if (res.folder?.path === lib.path) applyChange(res);
+        else refreshAfterChange();
+        const key = it.replace ? "log.replaced" : "log.uploaded";
+        log(fill(t(key), { name: baseName(res.path ?? it.name), to: where(it.folder) }) + (it.book ? "" : " · " + t("up.notBookHint")) + warnings(res));
+      } else {
+        failItem(it, errorText(new APIError(res.error ?? "internal", res.message ?? "", res)));
+      }
+      resolve();
+    };
+    xhr.onerror = () => {
+      failItem(it, t("up.lost"));
+      resolve();
+    };
+    xhr.onabort = () => {
+      setItem(it, "cancelled");
+      log(fill(t("log.cancelled"), { name: it.name }));
+      resolve();
+    };
+    xhr.send(it.file);
+  });
+}
+
+function failItem(it, why) {
+  it.note = why;
+  setItem(it, "failed");
+  log(fill(t("log.uploadFailed"), { name: it.name, why }));
+}
+
+function cancelUpload(id) {
+  const it = uploads.items.find((x) => x.id === id);
+  if (!it || FINISHED.has(it.state)) return;
+  if (it.state === "sending" || it.state === "finishing") return it.xhr.abort();
+  setItem(it, "cancelled");
+  log(fill(t("log.cancelled"), { name: it.name }));
+}
+
+function clearQueue() {
+  uploads.items = uploads.items.filter((x) => !FINISHED.has(x.state));
+  renderQueue();
+}
+
+function setItem(it, state) {
+  it.state = state;
+  if (it.row) fillRow(it);
+  else renderQueue();
+  renderQueueHead();
+}
+
+function renderQueueHead() {
+  const done = uploads.items.filter((x) => FINISHED.has(x.state)).length;
+  $("queue-count").textContent = `${done}/${uploads.items.length}`;
+  $("queue-clear").disabled = done === 0;
+}
+
+// Rows are built once and updated in place, so a cancel button stays under
+// the pointer while progress events arrive.
+function renderQueue() {
+  $("queue").hidden = uploads.items.length === 0;
+  $("queue-rows").replaceChildren(...uploads.items.map((it) => {
+    if (!it.row) {
+      it.row = el("li", { class: "qrow" });
+      it.cells = {
+        name: el("span", { class: "qname", title: it.name }),
+        bar: el("span"),
+        pct: el("span", { class: "num" }),
+        speed: el("span", { class: "num qspeed" }),
+        state: el("span", { class: "qstate" }),
+        note: el("span", { class: "qnote" }),
+      };
+      it.row.append(it.cells.name, el("span", { class: "bar" }, it.cells.bar), it.cells.pct, it.cells.speed, it.cells.state, it.cells.note);
+    }
+    fillRow(it);
+    return it.row;
+  }));
+  renderQueueHead();
+}
+
+function fillRow(it) {
+  const c = it.cells;
+  it.row.dataset.state = it.state;
+  const name = [it.name, el("span", { class: "dim" }, bytes(it.size))];
+  if (it.book === false) name.push(el("span", { class: "tag notbook", title: t("up.notBookHint") }, t("up.notBook")));
+  c.name.replaceChildren(...name);
+  const pct = it.size ? Math.floor((100 * it.sent) / it.size) : (it.state === "done" ? 100 : 0);
+  c.bar.style.width = `${pct}%`;
+  c.pct.textContent = `${pct}%`;
+  c.speed.textContent = it.state === "sending" && it.speed ? `${bytes(it.speed)}/s` : "";
+  if (FINISHED.has(it.state)) {
+    c.state.replaceChildren(t(`up.${it.state}`));
+  } else {
+    c.state.replaceChildren(el("button", { type: "button", "data-action": "cancel-upload", "data-id": it.id, title: t("up.cancel") }, `${t(`up.${it.state}`)} ×`));
+  }
+  c.note.textContent = it.note ?? "";
+  c.note.hidden = !it.note;
+}
+
 // Rows drag onto folder rows, the ".." row and folders in the tree.
 let dragging = null;
 
@@ -776,6 +995,21 @@ document.addEventListener("dragend", () => {
   for (const d of document.querySelectorAll(".drop")) d.classList.remove("drop");
 });
 
+// Files dragged in from the computer upload into the open folder when
+// dropped on the Files pane. Dropped anywhere else they are ignored, rather
+// than the browser leaving the dashboard to open them.
+const filesDrag = (e) => !dragging && [...(e.dataTransfer?.types ?? [])].includes("Files");
+
+function dropping(on) {
+  const pane = document.querySelector(".files");
+  if (on) $("drop-hint").textContent = fill(t("drop.hint"), { folder: where(lib.path) });
+  pane.classList.toggle("dropping", on);
+}
+
+document.addEventListener("dragleave", (e) => {
+  if (filesDrag(e) && !e.relatedTarget) dropping(false);
+});
+
 function dropTarget(e) {
   const target = e.target.closest?.("[data-drop]");
   if (!target || !dragging) return null;
@@ -786,6 +1020,13 @@ function dropTarget(e) {
 }
 
 document.addEventListener("dragover", (e) => {
+  if (filesDrag(e)) {
+    e.preventDefault();
+    const on = !!e.target.closest?.(".files") && !!lib.folder && !$("library").hidden;
+    e.dataTransfer.dropEffect = on ? "copy" : "none";
+    dropping(on);
+    return;
+  }
   const target = dropTarget(e);
   for (const d of document.querySelectorAll(".drop")) if (d !== target) d.classList.remove("drop");
   if (!target) return;
@@ -795,6 +1036,12 @@ document.addEventListener("dragover", (e) => {
 });
 
 document.addEventListener("drop", (e) => {
+  if (filesDrag(e)) {
+    e.preventDefault();
+    dropping(false);
+    if (e.target.closest?.(".files") && lib.folder && !$("library").hidden) enqueue(e.dataTransfer.files);
+    return;
+  }
   const target = dropTarget(e);
   const paths = dragging;
   if (!target) return;
@@ -802,6 +1049,11 @@ document.addEventListener("drop", (e) => {
   target.classList.remove("drop");
   dragging = null;
   move(paths, target.dataset.drop);
+});
+
+$("upload-input").addEventListener("change", (e) => {
+  enqueue(e.target.files);
+  e.target.value = "";
 });
 
 $("manual").addEventListener("submit", (e) => {
