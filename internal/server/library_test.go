@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -308,5 +310,39 @@ func TestLibraryChangesNeedSameOriginPost(t *testing.T) {
 	}
 	if !onDisk(t, fake, dune) {
 		t.Fatal("deleted")
+	}
+}
+
+// Two writes racing for one name: exactly one wins and no Book is lost.
+func TestLibraryWritesDoNotRace(t *testing.T) {
+	fake, h := opLibrary(t)
+	doc := fakedevice.Documents
+	for i := range 20 {
+		a, b := fmt.Sprintf("a%d.epub", i), fmt.Sprintf("b%d.epub", i)
+		fake.WriteFile(t, doc+"/"+a, "a")
+		fake.WriteFile(t, doc+"/"+b, "b")
+		target := fmt.Sprintf("same%d.epub", i)
+		codes := make(chan int, 2)
+		var start sync.WaitGroup
+		start.Add(1)
+		for _, from := range []string{a, b} {
+			go func() {
+				start.Wait()
+				codes <- post(t, h, "/api/library/rename", `{"path":"`+from+`","name":"`+target+`"}`).Code
+			}()
+		}
+		start.Done()
+		if got := <-codes + <-codes; got != http.StatusOK+http.StatusConflict {
+			t.Fatalf("round %d: codes sum %d", i, got)
+		}
+		left := 0
+		for _, n := range []string{a, b, target} {
+			if onDisk(t, fake, doc+"/"+n) {
+				left++
+			}
+		}
+		if left != 2 {
+			t.Fatalf("round %d: %d of 2 books left", i, left)
+		}
 	}
 }
