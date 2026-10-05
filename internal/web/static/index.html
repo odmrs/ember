@@ -15,11 +15,17 @@
     <span class="tagline" data-i18n="tagline"></span>
     <nav class="right">
       <span id="link"><span class="dot"></span><span id="link-text"></span></span>
-      <button type="button" class="bracket" disabled data-i18n="settings"></button>
+      <button type="button" class="bracket" id="settings-btn" data-action="settings" disabled data-i18n="settings"></button>
       <span class="lang">[<button type="button" data-lang="en">EN</button>|<button type="button" data-lang="pt">PT</button>]</span>
       <button type="button" class="bracket" disabled data-i18n="help"></button>
     </nav>
   </header>
+
+  <div class="box banner" id="pwd-banner" role="alert" hidden>
+    <span class="label" data-i18n="pwd.bannerTitle"></span>
+    <span data-i18n="pwd.banner"></span>
+    <button type="button" class="secondary" data-action="settings-open" data-i18n="pwd.bannerAction"></button>
+  </div>
 
   <section class="box pair" id="pair" hidden>
     <div class="head"><span class="label" data-i18n="pair.title"></span><span class="dim" id="pair-stage"></span></div>
@@ -118,6 +124,65 @@
     </div>
   </section>
 
+  <section class="box settings" id="settings" hidden>
+    <div class="head">
+      <span class="label" data-i18n="set.title"></span>
+      <button type="button" class="secondary" data-action="settings-close" data-i18n="set.back"></button>
+    </div>
+
+    <form class="set-group" id="settings-form" autocomplete="off">
+      <div class="label" data-i18n="set.device"></div>
+      <label class="field">
+        <span data-i18n="set.root"></span>
+        <input id="set-root" spellcheck="false">
+        <small class="dim" data-i18n="set.rootHint"></small>
+      </label>
+      <label class="field">
+        <span data-i18n="set.port"></span>
+        <input id="set-port" type="number" min="1" max="65535">
+        <small class="dim" data-i18n="set.portHint"></small>
+      </label>
+      <label class="field">
+        <span data-i18n="set.user"></span>
+        <input id="set-user" spellcheck="false">
+      </label>
+      <div class="field">
+        <span data-i18n="set.awake"></span>
+        <label class="check"><input id="set-awake" type="checkbox"><span data-i18n="set.awakeOn"></span></label>
+        <small class="dim" data-i18n="set.awakeHint"></small>
+      </div>
+      <div class="actions">
+        <button type="submit" class="primary" id="set-save" data-i18n="set.save"></button>
+        <span class="set-msg" id="set-msg" role="status"></span>
+      </div>
+    </form>
+
+    <div class="set-group">
+      <div class="label" data-i18n="set.language"></div>
+      <label class="field">
+        <span data-i18n="set.languageLabel"></span>
+        <select id="set-lang">
+          <option value="en">English</option>
+          <option value="pt">Português (Brasil)</option>
+        </select>
+        <small class="dim" data-i18n="set.languageHint"></small>
+      </label>
+    </div>
+
+    <div class="set-group risky" id="pwd-group">
+      <div class="label" data-i18n="pwd.title"></div>
+      <p><span data-i18n="pwd.state"></span> <b id="pwd-state"></b></p>
+      <p class="dim" data-i18n="pwd.about"></p>
+      <div class="actions"><button type="button" class="secondary" id="pwd-toggle" data-action="passwordless"></button></div>
+    </div>
+
+    <div class="set-group risky">
+      <div class="label" data-i18n="forget.title"></div>
+      <p class="dim" data-i18n="forget.about"></p>
+      <div class="actions"><button type="button" class="danger" data-action="forget" data-i18n="forget.button"></button></div>
+    </div>
+  </section>
+
   <main class="main" id="library">
     <section class="box">
       <div class="head"><span class="label" data-i18n="library"></span></div>
@@ -163,7 +228,7 @@
   </dialog>
 
   <div class="box wire"><span class="label" data-i18n="log"></span><span id="log" data-i18n="log.ready"></span></div>
-  <footer class="box status"><span id="device-line">—</span><span id="version-line"></span></footer>
+  <footer class="box status"><span id="device-line">—</span><span id="awake-line" hidden></span><span id="version-line"></span></footer>
 </div>
 </body>
 </html>

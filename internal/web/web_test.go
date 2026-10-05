@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/odmrs/ember/internal/connector"
 	"github.com/odmrs/ember/internal/library"
 )
 
@@ -104,6 +105,11 @@ func TestEveryServerCodeHasAMessage(t *testing.T) {
 	for _, r := range reasons {
 		if _, ok := en["err.name."+r]; !ok {
 			t.Errorf("no message for name reason %q", r)
+		}
+	}
+	for _, a := range []connector.Awake{connector.AwakeOn, connector.AwakeOff, connector.AwakeUnavailable} {
+		if _, ok := en["awake."+string(a)]; !ok {
+			t.Errorf("no message for keep-awake state %q", a)
 		}
 	}
 	for _, w := range []string{library.WarnSidecarShared, library.WarnSidecarLeft, library.WarnReplacedLeft} {
