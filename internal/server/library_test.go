@@ -24,6 +24,12 @@ import (
 // the Connector holds the link.
 func linkedServer(t *testing.T, fake *fakedevice.Device) http.Handler {
 	t.Helper()
+	return linkedHandler(t, fake, self)
+}
+
+// linkedHandler is linkedServer for a server listening on hostport.
+func linkedHandler(t *testing.T, fake *fakedevice.Device, hostport string) http.Handler {
+	t.Helper()
 	store := pairedStore(t, fake)
 	noLAN := func([]int) ([]string, error) { return nil, nil }
 	conn := connector.New(connector.Config{Store: store, Targets: noLAN})
@@ -40,7 +46,7 @@ func linkedServer(t *testing.T, fake *fakedevice.Device) http.Handler {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return New(self, "test", pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), conn)
+	return New(hostport, "test", pairing.NewFlow(pairing.Config{Store: store, Targets: noLAN}), conn)
 }
 
 func pairedStore(t *testing.T, fake *fakedevice.Device) *profile.Store {
