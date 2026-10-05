@@ -30,6 +30,7 @@ func New(hostport, version string, flow *pairing.Flow, conn *connector.Connector
 	})
 	mux.HandleFunc("GET /api/events", events(conn))
 	routePairing(mux, flow)
+	routeLibrary(mux, flow, conn)
 	return guard(hostport, mux)
 }
 

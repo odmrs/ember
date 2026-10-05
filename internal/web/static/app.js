@@ -62,6 +62,11 @@ const ERRORS = {
   bad_address: "err.badAddress",
   already_paired: "err.alreadyPaired",
   unreachable: "err.unreachable",
+  not_paired: "err.notPaired",
+  not_linked: "err.notLinked",
+  outside_library: "err.outsideLibrary",
+  not_found: "err.notFound",
+  not_folder: "err.notFolder",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -116,10 +121,10 @@ function render() {
   const d = status.device;
   if (d) {
     const address = conn.phase === "linked" ? conn.address : `${d.address}:${d.port}`;
-    $("path").textContent = d.libraryRoot;
-    $("free").textContent = bytes(d.survey.freeBytes);
     $("device-line").textContent = `${d.user}@${address} · ${d.fingerprint}`;
+    renderHero(d);
   }
+  if (!active && !connecting) renderLibrary();
 }
 
 function renderConnecting() {
@@ -189,6 +194,145 @@ function renderCandidates() {
     }
     list.append(item);
   }
+}
+
+// lib is the Library as last read from the Device. Paths are Library paths:
+// "" is the root, "Sci-Fi/Asimov" a folder in it.
+const lib = {
+  path: folderFromHash(),
+  folder: null,
+  stats: null,
+  children: new Map(), // folder path -> its subfolders, filled as folders are read
+  expanded: new Set([""]),
+  selected: null,
+  seq: 0,
+};
+
+// The open folder is kept in the URL so a reload returns to it.
+function folderFromHash() {
+  try {
+    return decodeURIComponent(location.hash.slice(1));
+  } catch {
+    return "";
+  }
+}
+
+const parentOf = (p) => p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+const baseName = (p) => p.slice(p.lastIndexOf("/") + 1);
+
+function ancestors(p) {
+  const out = [""];
+  if (!p) return out;
+  const parts = p.split("/");
+  for (let i = 1; i <= parts.length; i++) out.push(parts.slice(0, i).join("/"));
+  return out;
+}
+
+function readFolder(p) {
+  return api(`api/library/folder?path=${encodeURIComponent(p)}`).then((f) => {
+    lib.children.set(f.path, f.entries.filter((e) => e.kind === "folder"));
+    return f;
+  });
+}
+
+async function openFolder(p) {
+  const seq = ++lib.seq;
+  try {
+    const f = await readFolder(p);
+    if (seq !== lib.seq) return;
+    Object.assign(lib, { path: f.path, folder: f, selected: null });
+    history.replaceState(null, "", f.path ? `#${encodeURIComponent(f.path)}` : location.pathname);
+    for (const a of ancestors(f.path)) lib.expanded.add(a);
+    render();
+    // After a reconnect deep in the tree, the levels above may be unknown.
+    for (const a of ancestors(f.path)) {
+      if (!lib.children.has(a)) await readFolder(a).then(render, () => {});
+    }
+  } catch (err) {
+    if (seq !== lib.seq) return;
+    log(`${t(ERRORS[err.code] ?? "err.internal")} ${p}`);
+    if (p && (err.code === "not_found" || err.code === "not_folder" || err.code === "outside_library")) openFolder("");
+  }
+}
+
+async function toggleFolder(p) {
+  if (lib.expanded.has(p)) {
+    lib.expanded.delete(p);
+  } else {
+    lib.expanded.add(p);
+    if (!lib.children.has(p)) await readFolder(p).catch((err) => log(t(ERRORS[err.code] ?? "err.internal")));
+  }
+  render();
+}
+
+async function refreshLibrary() {
+  lib.children.clear();
+  api("api/library/stats").then((s) => { lib.stats = s; render(); }, (err) => log(t(ERRORS[err.code] ?? "err.internal")));
+  await openFolder(lib.path);
+}
+
+function renderHero(d) {
+  const root = lib.stats?.root ?? d.libraryRoot;
+  $("path").textContent = lib.path ? `${root}/${lib.path}` : root;
+  $("free").textContent = bytes(lib.stats ? lib.stats.freeBytes : d.survey.freeBytes);
+  $("book-count").textContent = lib.folder?.books ?? 0;
+  $("folder-count").textContent = lib.folder?.folders ?? 0;
+}
+
+function treeNode(p, name, depth, subfolders) {
+  const open = lib.expanded.has(p);
+  const node = el("div", { class: p === lib.path ? "node on" : "node" });
+  node.style.setProperty("--depth", depth);
+  const caret = subfolders > 0 || subfolders < 0
+    ? el("button", { type: "button", class: "caret", "data-action": "toggle", "data-path": p, "aria-expanded": open }, open ? "▾" : "▸")
+    : el("span", { class: "caret" });
+  node.append(caret, el("button", { type: "button", class: "go", "data-action": "open", "data-path": p, title: name }, name));
+  const out = [node];
+  if (open) {
+    for (const c of lib.children.get(p) ?? []) out.push(...treeNode(c.path, c.name, depth + 1, c.subfolders ?? 0));
+  }
+  return out;
+}
+
+function itemCount(e) {
+  if (e.items === undefined) return t("folder.empty");
+  if (e.items < 0) return "—";
+  return `${e.items} ${t(e.items === 1 ? "folder.item" : "folder.items")}`;
+}
+
+function fileRow(e) {
+  const name = el("td", { class: "name" });
+  const tr = el("tr", { class: e.kind, "data-select": e.path }, name);
+  if (e.path === lib.selected) tr.classList.add("sel");
+  if (e.kind === "folder") {
+    tr.dataset.folder = e.path;
+    name.append(el("button", { type: "button", class: "go", "data-action": "open", "data-path": e.path }, `▸ ${e.name}`));
+    tr.append(el("td", { class: "num dim" }, itemCount(e)));
+    return tr;
+  }
+  name.append(e.name);
+  if (e.format) name.append(el("span", { class: "ext" }, e.format));
+  if (e.openNow) name.append(el("span", { class: "open-now" }, t("openNow")));
+  if (e.kind === "other") tr.title = t("otherHint");
+  tr.append(el("td", { class: "num" }, bytes(e.size)));
+  return tr;
+}
+
+function renderLibrary() {
+  const root = status.device?.libraryRoot ?? "";
+  $("tree").replaceChildren(...treeNode("", `/ ${baseName(root)}`, 0, lib.children.get("")?.length ?? -1));
+  $("files-where").textContent = ` · ${lib.path ? baseName(lib.path) : baseName(root)}`;
+
+  const rows = [];
+  if (lib.folder && lib.path) {
+    const up = parentOf(lib.path);
+    rows.push(el("tr", { class: "folder up", "data-folder": up },
+      el("td", { class: "name" }, el("button", { type: "button", class: "go", "data-action": "open", "data-path": up }, "↑ ..")),
+      el("td", {})));
+  }
+  for (const e of lib.folder?.entries ?? []) rows.push(fileRow(e));
+  $("rows").replaceChildren(...rows);
+  $("empty").hidden = !lib.folder || lib.folder.entries.length > 0;
 }
 
 function log(text) {
@@ -278,8 +422,17 @@ document.addEventListener("click", (e) => {
   if (lang) return setLang(lang.dataset.lang).catch((err) => log(err.message));
 
   const b = e.target.closest("[data-action]");
-  if (!b) return;
+  if (!b) {
+    const row = e.target.closest("tr[data-select]");
+    if (row) {
+      lib.selected = row.dataset.select;
+      renderLibrary();
+    }
+    return;
+  }
   switch (b.dataset.action) {
+    case "open": return openFolder(b.dataset.path);
+    case "toggle": return toggleFolder(b.dataset.path);
     case "search": return search("");
     case "confirm": return confirm(b.dataset.address, b.dataset.fingerprint);
     case "finish":
@@ -289,6 +442,11 @@ document.addEventListener("click", (e) => {
       return navigator.clipboard.writeText($("pubkey").textContent)
         .then(() => log(t("log.copied")), (err) => log(err.message));
   }
+});
+
+$("rows").addEventListener("dblclick", (e) => {
+  const row = e.target.closest("tr[data-folder]");
+  if (row) openFolder(row.dataset.folder);
 });
 
 $("manual").addEventListener("submit", (e) => {
@@ -308,7 +466,10 @@ function listen() {
   events.addEventListener("state", (e) => {
     const was = conn.phase;
     Object.assign(conn, { attempt: 0, address: "", failure: "", scanning: false }, JSON.parse(e.data), { online: true });
-    if (was !== "linked" && conn.phase === "linked") log(`${t("log.linked")} ${conn.address}`);
+    if (was !== "linked" && conn.phase === "linked") {
+      log(`${t("log.linked")} ${conn.address}`);
+      refreshLibrary();
+    }
     if (was === "linked" && conn.phase !== "linked") log(t("log.lost"));
     render();
   });

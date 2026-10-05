@@ -17,8 +17,6 @@
   "state.searching": "PROCURANDO",
   "state.linked": "CONECTADO",
   "state.offline": "OFFLINE",
-  "linkedTitle": "Kindle conectado",
-  "linkedBody": "O ember está conectado ao seu Kindle. Navegar pela biblioteca vem a seguir.",
   "conn.title": "Procurando o seu Kindle",
   "conn.retry": "nova tentativa a cada 2s",
   "conn.step1": "Acorde o Kindle e abra o KOReader",
@@ -85,5 +83,18 @@
   "err.badAddress": "Endereço inválido.",
   "err.alreadyPaired": "Já existe um Kindle pareado.",
   "err.unreachable": "O Kindle não respondeu.",
-  "err.internal": "Algo deu errado."
+  "err.internal": "Algo deu errado.",
+  "col.name": "Nome",
+  "col.size": "Tamanho",
+  "openNow": "ABERTO AGORA",
+  "emptyFolder": "Esta pasta está vazia.",
+  "folder.item": "item",
+  "folder.items": "itens",
+  "folder.empty": "vazia",
+  "otherHint": "Não é um formato de livro que o KOReader abre",
+  "err.notPaired": "Nenhum Kindle pareado.",
+  "err.notLinked": "O Kindle não está conectado agora.",
+  "err.outsideLibrary": "Esse caminho fica fora da biblioteca.",
+  "err.notFound": "Não encontrado no Kindle:",
+  "err.notFolder": "Não é uma pasta:"
 }

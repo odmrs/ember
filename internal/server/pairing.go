@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/odmrs/ember/internal/connector"
 	"github.com/odmrs/ember/internal/device"
+	"github.com/odmrs/ember/internal/library"
 	"github.com/odmrs/ember/internal/pairing"
 	"github.com/odmrs/ember/internal/profile"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -160,7 +163,18 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusBadGateway, "verify_failed", err.Error())
 	case errors.Is(err, device.ErrAuthRejected):
 		writeErrorCode(w, http.StatusBadGateway, "auth_rejected", err.Error())
-	case errors.As(err, &opErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded), errors.Is(err, io.EOF):
+	case errors.Is(err, profile.ErrNotPaired):
+		writeErrorCode(w, http.StatusConflict, "not_paired", err.Error())
+	case errors.Is(err, connector.ErrNotLinked):
+		writeErrorCode(w, http.StatusServiceUnavailable, "not_linked", err.Error())
+	case errors.Is(err, library.ErrOutside):
+		writeErrorCode(w, http.StatusBadRequest, "outside_library", err.Error())
+	case errors.Is(err, library.ErrNotFound):
+		writeErrorCode(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, library.ErrNotFolder):
+		writeErrorCode(w, http.StatusConflict, "not_folder", err.Error())
+	case errors.As(err, &opErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded), errors.Is(err, io.EOF),
+		errors.Is(err, sftp.ErrSSHFxConnectionLost), errors.Is(err, sftp.ErrSSHFxNoConnection):
 		writeErrorCode(w, http.StatusBadGateway, "unreachable", err.Error())
 	default:
 		writeErrorCode(w, http.StatusInternalServerError, "internal", err.Error())

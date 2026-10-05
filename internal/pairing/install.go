@@ -9,18 +9,16 @@ import (
 	"strings"
 
 	"github.com/odmrs/ember/internal/device"
+	"github.com/odmrs/ember/internal/koreader"
 	"github.com/odmrs/ember/internal/profile"
 	"golang.org/x/crypto/ssh"
 )
 
 // Where KOReader keeps what ember reads and writes on a Kindle.
 const (
-	settingsPath       = "/mnt/us/koreader/settings.reader.lua"
 	gitRevPath         = "/mnt/us/koreader/git-rev"
 	authorizedKeysPath = "/mnt/us/koreader/settings/SSH/authorized_keys"
 )
-
-const maxSettingsSize = 4 << 20
 
 // Survey reads what pairing needs to know about the Device. Missing settings
 // are left empty; only a broken connection is an error.
@@ -32,14 +30,12 @@ func Survey(d *device.Device, libraryRoot string) (profile.Survey, error) {
 		return s, err
 	}
 
-	settings, err := d.ReadFile(settingsPath, maxSettingsSize)
+	src, err := d.ReadFile(koreader.SettingsPath, koreader.MaxSettingsSize)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, device.ErrTooLarge) {
 		return s, err
 	}
-	src := string(settings)
-	s.HomeDir, _ = luaString(src, "home_dir")
-	s.MetadataMode, _ = luaString(src, "document_metadata_folder")
-	s.LastFile, _ = luaString(src, "lastfile")
+	settings := koreader.ParseSettings(src)
+	s.HomeDir, s.MetadataMode, s.LastFile = settings.HomeDir, settings.MetadataMode, settings.LastFile
 
 	fi, err := d.Stat(libraryRoot)
 	switch {
