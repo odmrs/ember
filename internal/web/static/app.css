@@ -156,6 +156,21 @@ button:disabled { cursor: default; opacity: .45; }
 .dialog-body .counts { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); }
 .dialog-body .warn { border: 1px solid var(--bad); color: var(--bad); padding: 8px 10px; }
 .dialog .actions { justify-content: flex-end; padding: 0 16px 14px; margin-top: 14px; }
+.dialog.wide { width: min(1040px, calc(100vw - 32px)); }
+.dialog .head .dim { font-size: 11px; letter-spacing: .06em; }
+.clean-wrap { max-height: min(58vh, 560px); overflow: auto; border: 1px solid var(--line); }
+.clean-list th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.clean-list td { vertical-align: top; padding: 6px 10px; }
+.clean-list td.name { width: 50%; }
+.clean-list .pick { width: 1%; padding-right: 0; }
+.clean-list .pick input { accent-color: var(--accent); margin: 3px 0 0; }
+.clean-before { color: var(--muted); font-size: 12px; }
+.clean-list .name-edit { width: 100%; }
+.clean-list tr.off .name-edit { border-color: var(--line); color: var(--muted); }
+.clean-note { font-size: 11px; margin-top: 4px; }
+.tag.src { white-space: nowrap; }
+.tag.src.metadata { border-color: var(--ok); color: var(--ok); }
+.tag.src.generic { border-color: var(--muted); color: var(--muted); }
 .dialog .actions.choices { flex-direction: column-reverse; align-items: stretch; }
 .dialog .actions.choices button { text-align: left; }
 .danger { background: var(--bad); color: var(--on-fill); padding: 7px 14px; font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }

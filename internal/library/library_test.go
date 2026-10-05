@@ -85,7 +85,7 @@ func library(t *testing.T, d disk) {
 	settings(t, d, `    ["lastfile"] = "/mnt/us/documents/Sci-Fi/Foundation.pdf",`+"\n")
 }
 
-func names(f Folder) []string {
+func entryNames(f Folder) []string {
 	var out []string
 	for _, e := range f.Entries {
 		out = append(out, e.Name)
@@ -100,7 +100,7 @@ func entry(t *testing.T, f Folder, name string) Entry {
 			return e
 		}
 	}
-	t.Fatalf("%q not listed in %v", name, names(f))
+	t.Fatalf("%q not listed in %v", name, entryNames(f))
 	return Entry{}
 }
 
@@ -111,7 +111,7 @@ func TestListShowsFoldersThenFilesAndHidesSidecars(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := strings.Join(names(f), ","), "Empty,Sci-Fi,cover.png,Dune.epub,Neuromancer.mobi"; got != want {
+		if got, want := strings.Join(entryNames(f), ","), "Empty,Sci-Fi,cover.png,Dune.epub,Neuromancer.mobi"; got != want {
 			t.Fatalf("entries = %s, want %s", got, want)
 		}
 		if f.Path != "" || f.Books != 2 || f.Folders != 2 || f.Others != 1 {
@@ -144,7 +144,7 @@ func TestListSubfolderFlagsTheOpenBook(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Join(names(f), ","); got != "Asimov,Foundation.pdf" {
+		if got := strings.Join(entryNames(f), ","); got != "Asimov,Foundation.pdf" {
 			t.Fatalf("entries = %s", got)
 		}
 		fd := entry(t, f, "Foundation.pdf")
@@ -406,7 +406,13 @@ func (d *dirFS) Create(p string) (io.WriteCloser, error) {
 	return os.OpenFile(d.Path(p), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 }
 
-func (d *dirFS) Open(p string) (io.ReadCloser, error) { return os.Open(d.Path(p)) }
+func (d *dirFS) Open(p string) (File, error) {
+	f, err := os.Open(d.Path(p))
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
 
 func (d *dirFS) Mkdir(p string) error         { return os.Mkdir(d.Path(p), 0o755) }
 func (d *dirFS) Rename(from, to string) error { return os.Rename(d.Path(from), d.Path(to)) }

@@ -41,11 +41,15 @@ type Profile struct {
 	User        string `json:"user"`
 	LibraryRoot string `json:"libraryRoot"`
 	// HostKey is the Device's pinned host key in authorized_keys format.
-	HostKey      string    `json:"hostKey"`
-	Survey       Survey    `json:"survey"`
-	KeepAwake    bool      `json:"keepAwake"`
-	Passwordless bool      `json:"passwordless"`
-	PairedAt     time.Time `json:"pairedAt"`
+	HostKey      string `json:"hostKey"`
+	Survey       Survey `json:"survey"`
+	KeepAwake    bool   `json:"keepAwake"`
+	Passwordless bool   `json:"passwordless"`
+	// RawUploadNames keeps an uploaded Book's own file name instead of the
+	// clean one. False, the default, cleans: a Profile from before the
+	// setting existed reads the same way.
+	RawUploadNames bool      `json:"rawUploadNames"`
+	PairedAt       time.Time `json:"pairedAt"`
 }
 
 // Survey is what ember read from the Device while pairing.

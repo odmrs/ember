@@ -33,6 +33,8 @@ type settingsRequest struct {
 	Port        *int    `json:"port"`
 	User        *string `json:"user"`
 	KeepAwake   *bool   `json:"keepAwake"`
+	// CleanUploads lands uploaded Books under their clean names.
+	CleanUploads *bool `json:"cleanUploads"`
 }
 
 // routeSettings serves the Settings screen. Every change is saved to the
@@ -156,6 +158,9 @@ func (a *access) applySettings(req settingsRequest) (profile.Profile, error) {
 		}
 		if req.KeepAwake != nil {
 			p.KeepAwake = *req.KeepAwake
+		}
+		if req.CleanUploads != nil {
+			p.RawUploadNames = !*req.CleanUploads
 		}
 		return nil
 	})

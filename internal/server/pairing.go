@@ -32,12 +32,14 @@ type deviceView struct {
 	Survey       profile.Survey `json:"survey"`
 	KeepAwake    bool           `json:"keepAwake"`
 	Passwordless bool           `json:"passwordless"`
+	CleanUploads bool           `json:"cleanUploads"`
 }
 
 func viewOf(p profile.Profile) deviceView {
 	v := deviceView{
 		Address: p.Address, Port: p.Port, User: p.User, LibraryRoot: p.LibraryRoot,
 		Survey: p.Survey, KeepAwake: p.KeepAwake, Passwordless: p.Passwordless,
+		CleanUploads: !p.RawUploadNames,
 	}
 	if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(p.HostKey)); err == nil {
 		v.Fingerprint = ssh.FingerprintSHA256(key)

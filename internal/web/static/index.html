@@ -166,6 +166,11 @@
         <label class="check"><input id="set-awake" type="checkbox"><span data-i18n="set.awakeOn"></span></label>
         <small class="dim" data-i18n="set.awakeHint"></small>
       </div>
+      <div class="field">
+        <span data-i18n="set.cleanUploads"></span>
+        <label class="check"><input id="set-clean" type="checkbox"><span data-i18n="set.cleanUploadsOn"></span></label>
+        <small class="dim" data-i18n="set.cleanUploadsHint"></small>
+      </div>
       <div class="actions">
         <button type="submit" class="primary" id="set-save" data-i18n="set.save"></button>
         <span class="set-msg" id="set-msg" role="status"></span>
@@ -209,6 +214,7 @@
         <div class="toolbar">
           <button type="button" id="tb-upload" data-action="upload" disabled data-i18n="upload"></button>
           <button type="button" id="tb-folder" data-action="new-folder" disabled data-i18n="newFolder"></button>
+          <button type="button" id="tb-clean" data-action="clean" disabled data-i18n="cleanNames"></button>
           <button type="button" id="tb-get" data-action="download" disabled data-i18n="download"></button>
           <button type="button" id="tb-delete" data-action="delete" disabled data-i18n="delete"></button>
           <input type="file" id="upload-input" multiple hidden>
@@ -239,6 +245,31 @@
         <button type="submit" value="cancel" class="secondary" data-i18n="cancel"></button>
         <button type="submit" value="alt" class="secondary" id="dialog-alt" hidden></button>
         <button type="submit" value="ok" class="danger" id="dialog-ok"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="box dialog wide" id="clean-dialog" aria-labelledby="clean-title">
+    <form method="dialog">
+      <div class="head"><span class="label" id="clean-title"></span><span class="dim" id="clean-summary"></span></div>
+      <div class="dialog-body">
+        <p class="dim" id="clean-status" role="status"></p>
+        <div class="clean-wrap" id="clean-wrap" hidden>
+          <table class="list clean-list">
+            <thead><tr>
+              <th class="pick"><input type="checkbox" id="clean-all"></th>
+              <th data-i18n="clean.before"></th>
+              <th data-i18n="clean.after"></th>
+              <th data-i18n="clean.source"></th>
+            </tr></thead>
+            <tbody id="clean-rows"></tbody>
+          </table>
+        </div>
+        <p class="dim" id="clean-keeps" data-i18n="clean.keeps" hidden></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel" class="secondary" data-i18n="cancel"></button>
+        <button type="submit" value="ok" class="primary" id="clean-ok"></button>
       </div>
     </form>
   </dialog>
