@@ -129,6 +129,15 @@ only", and pick your Kindle in the dashboard. ember waits until the key works.
    SSH server off too, which is the safer choice: a server left on stays
    reachable from your network.
 
+### Start it from Spotlight (macOS)
+
+`scripts/macos-app.sh` builds `Ember.app` into `~/Applications`. Press Cmd+Space,
+type "ember" and press Enter: the dashboard opens, and ember quits by itself a
+few seconds after you close its last tab. Opening the app again while it is
+running brings the dashboard back.
+
+The same behaviour is available anywhere with `ember -quit-on-close`.
+
 ## Using it
 
 - **Browse.** The tree on the left is the library root (`/mnt/us/documents` by

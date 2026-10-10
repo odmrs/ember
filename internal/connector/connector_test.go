@@ -300,6 +300,30 @@ func TestADroppedLinkGetsAFreshRound(t *testing.T) {
 	}
 }
 
+func TestOnSessionsReportsTheOpenCount(t *testing.T) {
+	fake := fakedevice.New(t)
+	r := newRig(t, fake, fake.Addr(), fake)
+	c := r.connector(nil, fast)
+	counts := make(chan int, 8)
+	c.OnSessions(func(open int) { counts <- open })
+
+	_, end1 := c.Session()
+	_, end2 := c.Session()
+	end1()
+	end1()
+	end2()
+	for i, want := range []int{1, 2, 1, 0} {
+		if got := <-counts; got != want {
+			t.Fatalf("change %d: %d open, want %d", i, got, want)
+		}
+	}
+	select {
+	case n := <-counts:
+		t.Fatalf("ending a Session twice reported again: %d", n)
+	default:
+	}
+}
+
 func TestHostKeyMismatchIsReported(t *testing.T) {
 	fake := fakedevice.New(t)
 	impostor := fakedevice.New(t, fakedevice.WithHostKeySeed(9), fakedevice.Passwordless())

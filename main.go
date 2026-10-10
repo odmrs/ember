@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,15 +30,16 @@ func main() {
 	port := flag.Int("port", 8737, "local port for the dashboard (0 picks a free one)")
 	noOpen := flag.Bool("no-open", false, "do not open the browser on start")
 	configDir := flag.String("config", "", "profile directory (default: ember in the user config dir)")
+	quitOnClose := flag.Bool("quit-on-close", false, "exit a few seconds after the last dashboard tab closes")
 	flag.Parse()
 
-	if err := run(*port, !*noOpen, *configDir); err != nil {
+	if err := run(*port, !*noOpen, *configDir, *quitOnClose); err != nil {
 		fmt.Fprintln(os.Stderr, "ember:", err)
 		os.Exit(1)
 	}
 }
 
-func run(port int, open bool, configDir string) error {
+func run(port int, open bool, configDir string, quitOnClose bool) error {
 	if configDir == "" {
 		dir, err := profile.DefaultDir()
 		if err != nil {
@@ -53,11 +55,16 @@ func run(port int, open bool, configDir string) error {
 	conn := connector.New(connector.Config{Store: store})
 	defer conn.Close()
 
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	hostport := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	ln, err := net.Listen("tcp", hostport)
 	if err != nil {
-		return fmt.Errorf("cannot listen on 127.0.0.1:%d (already running? try -port 0): %w", port, err)
+		// Launching ember twice shows the dashboard that is already up.
+		if open && emberAt(hostport) {
+			return browser.Open("http://" + hostport + "/")
+		}
+		return fmt.Errorf("cannot listen on %s (in use by another program; try -port 0): %w", hostport, err)
 	}
-	hostport := ln.Addr().String()
+	hostport = ln.Addr().String()
 	srv := &http.Server{
 		Handler:           server.New(hostport, version, flow, conn),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -76,6 +83,9 @@ func run(port int, open bool, configDir string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if quitOnClose {
+		conn.OnSessions(watchTabs(quitIfNoTabOpens, quitAfterLastTab, stop).sessions)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,4 +97,16 @@ func run(port int, open bool, configDir string) error {
 		return err
 	}
 	return nil
+}
+
+// emberAt reports whether an ember dashboard already answers on hostport.
+func emberAt(hostport string) bool {
+	client := http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get("http://" + hostport + "/api/status")
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	var status struct{ Version string }
+	return res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&status) == nil && status.Version != ""
 }
