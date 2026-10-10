@@ -111,6 +111,7 @@ type Connector struct {
 	// it is not tried again until keep-awake is switched off.
 	awakeFailed bool
 	onLink      []func(*device.Device)
+	onSessions  []func(open int)
 	// disconnected is set by Disconnect and cleared by Retry; while it is
 	// set no attempt is made, across Sessions too.
 	disconnected bool
@@ -184,6 +185,7 @@ func (c *Connector) Session() (states <-chan State, end func()) {
 	if len(c.subs) == 1 {
 		c.start()
 	}
+	c.sessionsChanged()
 	var once sync.Once
 	return ch, func() { once.Do(func() { c.leave(ch) }) }
 }
@@ -197,6 +199,24 @@ func (c *Connector) leave(ch chan State) {
 	delete(c.subs, ch)
 	if len(c.subs) == 0 {
 		c.cancel()
+	}
+	c.sessionsChanged()
+}
+
+// OnSessions registers f to be called with the number of open Sessions every
+// time one opens or closes. f runs with the Connector locked, so it must not
+// call back into it.
+func (c *Connector) OnSessions(f func(open int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onSessions = append(c.onSessions, f)
+}
+
+// sessionsChanged tells the listeners how many Sessions are open; c.mu must be
+// held.
+func (c *Connector) sessionsChanged() {
+	for _, f := range c.onSessions {
+		f(len(c.subs))
 	}
 }
 
