@@ -214,6 +214,30 @@ func TestPingAndWaitFollowTheConnection(t *testing.T) {
 	dial(t, device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
 }
 
+// A Device that dropped off Wi-Fi answers nothing, yet closing the link to it
+// must not wait for an answer: the Connector cannot search again until it
+// returns.
+func TestCloseDoesNotWaitForASilentDevice(t *testing.T) {
+	fake := fakedevice.New(t, fakedevice.Passwordless())
+	d, err := device.Dial(context.Background(), device.Config{Addr: fake.Addr(), User: "root", HostKey: fake.HostKey()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.SetUnresponsive(true)
+
+	closed := make(chan struct{})
+	go func() {
+		d.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		fake.Stop() // lets the stuck Close return so the test can end
+		t.Fatal("Close waited on a Device that does not answer")
+	}
+}
+
 const holdAwake = "lipc-set-prop com.lab126.powerd preventScreenSaver 1 || exit $?; cat >/dev/null; lipc-set-prop com.lab126.powerd preventScreenSaver 0"
 
 func waitUntil(t *testing.T, what string, ok func() bool) {

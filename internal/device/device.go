@@ -173,10 +173,13 @@ func handshake(ctx context.Context, addr string, timeout time.Duration, cc *ssh.
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-// Close ends the SFTP session and the connection.
+// Close ends the connection and the SFTP session on it. The connection goes
+// first: closing SFTP on its own waits for the Device to confirm, and a Device
+// that dropped off Wi-Fi never does, which held the close for minutes.
 func (d *Device) Close() error {
+	err := d.ssh.Close()
 	d.sftp.Close()
-	return d.ssh.Close()
+	return err
 }
 
 // Wait blocks until the connection is closed, from either end.
