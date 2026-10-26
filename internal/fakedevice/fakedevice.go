@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -53,7 +54,6 @@ type Device struct {
 	addr    string
 	keys    []ssh.Signer
 	pwdless atomic.Bool
-	mute    atomic.Bool
 	noLipc  atomic.Bool
 	noExec  atomic.Bool
 	quick   atomic.Bool
@@ -62,7 +62,7 @@ type Device struct {
 
 	mu      sync.Mutex
 	ln      net.Listener
-	conns   map[net.Conn]bool
+	conns   map[*mutable]bool
 	execs   []string
 	running int
 	exits   []Exit
@@ -124,7 +124,7 @@ func New(t testing.TB, opts ...Option) *Device {
 	}
 	d := &Device{
 		t:     t,
-		conns: map[net.Conn]bool{},
+		conns: map[*mutable]bool{},
 		root:  t.TempDir(),
 		keys:  []ssh.Signer{mustSigner(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))), mustSigner(ecKey)},
 	}
@@ -162,10 +162,11 @@ func (d *Device) listen(addr string) {
 	go func() {
 		defer d.wg.Done()
 		for {
-			conn, err := ln.Accept()
+			raw, err := ln.Accept()
 			if err != nil {
 				return
 			}
+			conn := &mutable{Conn: raw, closed: make(chan struct{})}
 			d.mu.Lock()
 			if d.ln != ln {
 				// Stop ran between Accept and here.
@@ -232,10 +233,16 @@ func (d *Device) Start() {
 	d.listen(d.Addr())
 }
 
-// SetUnresponsive makes open connections stop answering requests while
+// SetUnresponsive makes the open connections stop answering anything while
 // staying open, like a Device that dropped off Wi-Fi without closing them.
 // New connections still log in.
-func (d *Device) SetUnresponsive(on bool) { d.mute.Store(on) }
+func (d *Device) SetUnresponsive(on bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for c := range d.conns {
+		c.mute.Store(on)
+	}
+}
 
 // SetFreeSpace changes the free bytes the fake reports, rounded down to
 // whole 4 KiB blocks as a real file system reports them.
@@ -363,7 +370,7 @@ func (d *Device) serve(conn net.Conn, cfg *ssh.ServerConfig) {
 	defer sc.Close()
 	go func() {
 		for req := range reqs {
-			if req.WantReply && !d.mute.Load() {
+			if req.WantReply {
 				_ = req.Reply(false, nil)
 			}
 		}
@@ -511,4 +518,31 @@ func mustSigner(key any) ssh.Signer {
 		panic(err)
 	}
 	return s
+}
+
+// mutable is a connection the fake stops reading from while mute is set:
+// what the client sends waits in the socket and nothing is answered, until
+// mute clears or the connection closes.
+type mutable struct {
+	net.Conn
+	mute   atomic.Bool
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *mutable) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	for c.mute.Load() {
+		select {
+		case <-c.closed:
+			return 0, net.ErrClosed
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return n, err
+}
+
+func (c *mutable) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
