@@ -28,11 +28,11 @@ Não há sincronização de biblioteca com uma nuvem do Ember.
 
 ## Instalar a versão com catálogo
 
-Enquanto esta mudança estiver em revisão, use a branch indicada abaixo.
-A versão `main` pode ainda não incluir a integração.
+A integração faz parte do código-fonte do Ember. Compile o painel e o helper
+a partir da branch principal:
 
 ```sh
-git clone --branch feat/verified-epub-catalog https://github.com/odmrs/ember.git
+git clone https://github.com/odmrs/ember.git
 cd ember
 (cd tools/bookget && go build -o ../../bookget ./cmd/bookget)
 go build -o ember .
