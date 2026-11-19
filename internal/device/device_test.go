@@ -197,7 +197,7 @@ func TestPingAndWaitFollowTheConnection(t *testing.T) {
 
 	waited := make(chan struct{})
 	go func() {
-		d.Wait()
+		_ = d.Wait() // The channel records disconnection, regardless of its cause.
 		close(waited)
 	}()
 	fake.Stop()

@@ -1,0 +1,9 @@
+.PHONY: build test check
+build:
+	go build -o bin/bookget ./cmd/bookget
+test:
+	go test -race ./...
+check:
+	go vet ./...
+	golangci-lint run ./...
+	test -z "$$(gofmt -l .)"

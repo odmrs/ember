@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="app.css">
 <script src="theme.js"></script>
 <script src="app.js" defer></script>
+<script src="bookget.js" defer></script>
 </head>
 <body>
 <div class="app">
@@ -106,6 +107,31 @@
         <div class="actions"><button type="button" class="secondary" data-action="copy" data-i18n="pair.copy"></button></div>
       </details>
     </div>
+  </section>
+
+  <section class="box book-catalog" aria-labelledby="catalog-heading">
+    <div class="head"><span class="label" id="catalog-heading" data-i18n="catalog.title"></span></div>
+    <form id="catalog-search" class="catalog-search">
+      <label for="catalog-query" data-i18n="catalog.query"></label>
+      <input id="catalog-query" name="q" type="search" required maxlength="150" autocomplete="off">
+      <button type="submit" class="primary" data-i18n="catalog.search"></button>
+      <label for="catalog-language" data-i18n="catalog.language"></label>
+      <select id="catalog-language" name="language">
+        <option value="" data-i18n="catalog.allLanguages"></option>
+        <option value="pt" selected>Português</option>
+        <option value="en">English</option>
+        <option value="es">Español</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="it">Italiano</option>
+        <option value="ja">日本語</option>
+      </select>
+      <label for="catalog-format" data-i18n="catalog.format"></label>
+      <select id="catalog-format"><option value="epub">EPUB · KOReader</option></select>
+    </form>
+    <p class="dim catalog-note" data-i18n="catalog.note"></p>
+    <p id="catalog-status" class="catalog-note" role="status" aria-live="polite"></p>
+    <ul id="catalog-results" class="catalog-results"></ul>
   </section>
 
   <section class="box hero" id="hero">

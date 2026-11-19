@@ -231,6 +231,9 @@ func TestLibraryOperations(t *testing.T) {
 	}
 	// The folder in view was deleted: the change stands, with no listing.
 	rec = post(t, h, "/api/library/mkdir", `{"parent":"","name":"Gone","view":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mkdir Gone: %d %s", rec.Code, rec.Body)
+	}
 	rec = post(t, h, "/api/library/delete", `{"paths":["Gone"],"view":"Gone"}`)
 	if a := answer(t, rec); rec.Code != http.StatusOK || a.Folder != nil {
 		t.Fatalf("delete in view: %d %s", rec.Code, rec.Body)

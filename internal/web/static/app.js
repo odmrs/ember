@@ -79,6 +79,8 @@ const FAILURES = {
   auth_rejected: "conn.authRejected",
 };
 const ERRORS = {
+  bookget_busy: "catalog.busy",
+  bookget_failed: "catalog.failed",
   host_key_mismatch: "err.hostKeyMismatch",
   key_not_accepted: "err.keyNotAccepted",
   verify_failed: "err.verifyFailed",

@@ -37,3 +37,11 @@ Out of scope: problems that need someone who already controls your computer
 account or the Kindle, the risks of KOReader's own "Login without password"
 option (ember warns about it), and bugs in Go or the vendored modules that
 ember does not make worse. Report those upstream.
+
+## Optional ebook catalog
+
+Catalog acquisition adds an external source and a dedicated Chrome profile.
+Its threat model and limitations are in [docs/bookget-security.md](docs/bookget-security.md).
+Credential disclosure, remote URL policy bypasses, unsafe EPUB acceptance, and
+cross-site control of catalog operations are in scope. Never attach credentials,
+browser profiles, raw account pages or downloaded books to a public report.

@@ -59,6 +59,7 @@ func newHandler(hostport, version string, flow *pairing.Flow, conn *connector.Co
 		writeJSON(w, map[string]bool{"stopped": req.StopServer})
 	})
 	routeLibrary(mux, a)
+	routeBookCatalog(mux, newBookCatalog(hostport))
 	routeSettings(mux, a, &confirmGate{now: now})
 	return guard(hostport, mux)
 }

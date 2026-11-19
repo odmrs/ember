@@ -11,7 +11,7 @@ func hostOf(srv *httptest.Server) string { return srv.Listener.Addr().String() }
 
 func TestEmberAtRecognisesARunningDashboard(t *testing.T) {
 	ember := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"version":"0.1.0","state":"paired"}`))
+		_, _ = w.Write([]byte(`{"version":"0.1.0","state":"paired"}`))
 	}))
 	defer ember.Close()
 	if !emberAt(hostOf(ember)) {
@@ -19,7 +19,7 @@ func TestEmberAtRecognisesARunningDashboard(t *testing.T) {
 	}
 
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>some other app</html>`))
+		_, _ = w.Write([]byte(`<html>some other app</html>`))
 	}))
 	defer other.Close()
 	if emberAt(hostOf(other)) {

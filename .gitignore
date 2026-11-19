@@ -8,3 +8,11 @@
 /CONTEXT.md
 /.scratch/
 /_harness/
+
+/bookget
+
+# Local catalog state and generated development files
+__pycache__/
+*.pyc
+.bookget-*/
+annas-archive-secret-key.txt
