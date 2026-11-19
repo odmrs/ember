@@ -14,6 +14,7 @@ trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work/Ember.app/Contents/MacOS" "$work/Ember.app/Contents/Resources"
 (cd "$root" && go build -mod=vendor -o "$work/Ember.app/Contents/Resources/ember" .)
+(cd "$root/tools/bookget" && go build -o "$work/Ember.app/Contents/Resources/bookget" ./cmd/bookget)
 
 cat > "$work/Ember.app/Contents/MacOS/Ember" <<'LAUNCH'
 #!/bin/sh

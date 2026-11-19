@@ -166,7 +166,7 @@ func buildXrefStreamPDF(info string, compressed bool) []byte {
 	}
 	var z bytes.Buffer
 	w := zlib.NewWriter(&z)
-	w.Write(pngPredict(rows, []byte{1, 2, 3, 4, 0}))
+	_, _ = w.Write(pngPredict(rows, []byte{1, 2, 3, 4, 0})) // bytes.Buffer cannot fail.
 	w.Close()
 	fmt.Fprintf(&b, "3 0 obj\n<< /Type /XRef /Size 4 /Index [0 1 1 3] /W [1 2 1] /Root 1 0 R /Info 2 0 R\n"+
 		"/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4 >> /Length %d >>\nstream\n", z.Len())

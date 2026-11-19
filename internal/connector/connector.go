@@ -667,7 +667,7 @@ func (c *Connector) link(ctx context.Context, d *device.Device, addr string, p p
 
 	gone := make(chan struct{})
 	go func() {
-		d.Wait()
+		_ = d.Wait() // The channel records disconnection, regardless of its cause.
 		close(gone)
 	}()
 	for {

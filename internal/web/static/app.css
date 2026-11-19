@@ -240,3 +240,13 @@ details[open] summary { margin-bottom: 10px; }
   .qrow .qspeed { display: none; }
   .app { margin: 12px auto; }
 }
+
+.catalog-search { display: flex; align-items: center; gap: 10px; padding: 12px; flex-wrap: wrap; }
+.catalog-search input { flex: 1; min-width: 160px; }
+.catalog-search select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); padding: 6px; }
+.catalog-note { margin: 8px 12px; overflow-wrap: anywhere; }
+.catalog-results { list-style: none; padding: 0 12px; }
+.catalog-results li { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid var(--line); padding: 10px 0; }
+.catalog-results li span { overflow-wrap: anywhere; min-width: 0; }
+.catalog-results li button { flex-shrink: 0; }
+@media (max-width: 560px) { .catalog-results li { align-items: stretch; flex-direction: column; } }

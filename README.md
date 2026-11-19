@@ -4,8 +4,10 @@ ember is a small web dashboard for managing the books on a jailbroken Kindle
 running KOReader. You run it on your computer, it finds the Kindle on your Wi-Fi
 and talks to it over SSH/SFTP, and you browse, upload, rename, move and delete
 books from the browser. Everything stays on your local network: ember serves the
-dashboard on `127.0.0.1` only, makes no requests to the internet and has no
-account, cloud or telemetry.
+dashboard on `127.0.0.1` only, with no cloud or telemetry service. Library
+management stays on your local network. The optional ebook catalog helper
+contacts external sources when you search or download; those sources can require
+their own account.
 
 ![The library in the dark theme](docs/screenshots/library-dark.png)
 
@@ -95,6 +97,46 @@ ember starts on `http://127.0.0.1:8737/` and opens it in your browser. Flags:
 | `-config` | `ember` in your user config dir | Where ember keeps its profile and key pair. |
 
 Stop it with Ctrl+C.
+
+### Find an existing EPUB and send it
+
+The dashboard searches Anna's Archive for existing EPUB editions. Choose an
+edition and click **Download + send**. The helper follows a normal free slow
+download option when available, retains the site's waiting period, checks the
+file locally, and sends through ember's existing upload API. EPUB needs KOReader.
+No conversion or Calibre is involved in this flow.
+
+Choose the book language separately from the dashboard language; Portuguese
+is selected initially, with an All languages option.
+
+**[Tutorial em português, com capturas de tela](docs/bookget.pt-BR.md)** ·
+[Catalog security model](docs/bookget-security.md)
+
+Build the helper beside ember:
+
+```sh
+(cd tools/bookget && go build -o ../../bookget ./cmd/bookget)
+go build -o ember .
+./ember
+```
+
+The macOS app bundles both binaries. With `go run .`, set
+`BOOKGET_BIN="$PWD/bookget"`. On macOS the helper reads its account credential
+from Keychain (service `bookget.annas-archive`, account `bookget`), or from
+`ANNAS_ARCHIVE_KEY` if explicitly provided. It never passes the key to the
+browser dashboard or command arguments. A registered account is distinct from
+a paid membership; the helper does not select member-only fast downloads.
+
+If HTTP access is challenged, an isolated visible Chrome may open. Complete any
+site verification yourself if requested. This uses a separate private profile,
+not personal browser tabs, and opens no remote debugging port. Google Chrome
+must already be installed. Files remain in `~/Downloads/books`; if the Kindle
+is offline, the local copy is kept and reported. Optional `VT_API_KEY` enables
+a hash-only VirusTotal lookup, with no file upload.
+
+See [bookget's documentation](tools/bookget/README.md) for limits and CLI usage.
+Run its tests with `(cd tools/bookget && go test -race ./...)` and catalog UI
+tests with `node --test internal/web/bookget_ui_test.cjs`.
 
 ### Pair your Kindle (once)
 
